@@ -1,0 +1,118 @@
+# =============================================================================
+# RLM Docker Compose Konfiguration
+# =============================================================================
+# Diese Datei definiert die Container-Dienste fuer RLM:
+# - rlm-sandbox: Python REPL-Umgebung
+# - llm-server: Optionaler lokaler LLM-Server (llama.cpp)
+#
+# Verwendung:
+#   docker compose up -d            # Starte alle Dienste
+#   docker compose up -d rlm-sandbox # Nur Sandbox starten
+#   docker compose down             # Stoppe alle Dienste
+#   docker compose logs -f          # Logs anzeigen
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # RLM REPL Sandbox
+  # ===========================================================================
+  rlm-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: rlm-sandbox:latest
+    container_name: rlm-sandbox
+
+    # Sicherheitseinstellungen
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: false
+
+    # Ressourcenlimits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+
+    # Netzwerk
+    networks:
+      - rlm-internal
+
+    # Volumes
+    volumes:
+      - rlm-workspace:/workspace
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 67108864  # 64MB
+
+    # Host-Zugriff fuer LLM-Proxy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # Umgebungsvariablen
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+
+    # Restart-Policy
+    restart: "no"
+
+    # Healthcheck
+    healthcheck:
+      test: ["CMD", "python", "-c", "print('OK')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ===========================================================================
+  # Lokaler LLM Server (Optional)
+  # ===========================================================================
+  # Entkommentiere diesen Abschnitt, wenn du einen lokalen LLM-Server
+  # mit llama.cpp verwenden moechtest.
+  #
+  # llm-server:
+  #   image: ghcr.io/ggerganov/llama.cpp:server
+  #   container_name: llm-server
+  #   ports:
+  #     - "5567:8080"
+  #   volumes:
+  #     - ./models:/models:ro
+  #   environment:
+  #     - LLAMA_ARG_MODEL=/models/GLM-4.7-Flash-REAP-23B-A3B-UD-Q2_K_XL.gguf
+  #     - LLAMA_ARG_CTX_SIZE=4096
+  #     - LLAMA_ARG_N_GPU_LAYERS=99
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   networks:
+  #     - rlm-internal
+  #   restart: unless-stopped
+
+# =============================================================================
+# Netzwerke
+# =============================================================================
+networks:
+  rlm-internal:
+    driver: bridge
+    internal: false  # Erlaubt Zugriff auf host.docker.internal
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  rlm-workspace:
+    driver: local
