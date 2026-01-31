@@ -225,7 +225,8 @@ class DockerREPL(NonIsolatedEnv):
                 "depth": self.depth,
             },
         )
-        self.proxy_server = HTTPServer(("127.0.0.1", 0), handler)
+        # Bind to 0.0.0.0 so Docker container can reach via host.docker.internal
+        self.proxy_server = HTTPServer(("0.0.0.0", 0), handler)
         self.proxy_port = self.proxy_server.server_address[1]
         self.proxy_thread = threading.Thread(target=self.proxy_server.serve_forever, daemon=True)
         self.proxy_thread.start()
