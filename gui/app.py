@@ -4,11 +4,12 @@ RLM Streamlit GUI
 Eine grafische Benutzeroberflaeche fuer das RLM-System.
 
 Starten mit:
-    streamlit run gui/app.py
+    streamlit run gui/app.py --server.port 8052
 """
 
 import streamlit as st
 import sys
+import time
 from pathlib import Path
 
 # Projektpfad hinzufuegen
@@ -19,6 +20,11 @@ from gui.rlm_backend import (
     RLMConfig,
     EXAMPLE_CONTEXTS,
     EXAMPLE_TASKS,
+)
+from gui.workflow_engine import WorkflowConfig, WorkflowStage
+from gui.documentation_workflow import (
+    DocumentationWorkflow,
+    WorkflowProgress,
 )
 
 
@@ -47,6 +53,15 @@ if "result" not in st.session_state:
 
 if "history" not in st.session_state:
     st.session_state.history = []
+
+if "workflow_running" not in st.session_state:
+    st.session_state.workflow_running = False
+
+if "workflow_progress" not in st.session_state:
+    st.session_state.workflow_progress = []
+
+if "workflow_result" not in st.session_state:
+    st.session_state.workflow_result = None
 
 
 # =============================================================================
@@ -128,6 +143,9 @@ with st.sidebar:
         else:
             st.error(docker_msg)
 
+    st.divider()
+    st.caption("Port: 8052")
+
 
 # =============================================================================
 # Hauptbereich
@@ -139,11 +157,16 @@ und sich selbst rekursiv aufzurufen.
 """)
 
 # Tabs fuer verschiedene Bereiche
-tab_main, tab_logs, tab_help = st.tabs(["📝 Ausfuehrung", "📊 Logs", "❓ Hilfe"])
+tab_main, tab_workflow, tab_logs, tab_help = st.tabs([
+    "📝 Einfache Ausfuehrung",
+    "📁 Dokumentations-Workflow",
+    "📊 Logs",
+    "❓ Hilfe"
+])
 
 
 # =============================================================================
-# Tab: Ausfuehrung
+# Tab: Einfache Ausfuehrung
 # =============================================================================
 with tab_main:
     # Beispiel-Auswahl
@@ -231,7 +254,6 @@ with tab_main:
         st.subheader("📤 Ergebnis")
 
         if result.success:
-            # Erfolg
             col_res, col_meta = st.columns([3, 1])
 
             with col_res:
@@ -242,19 +264,183 @@ with tab_main:
                 st.metric("Zeit", f"{result.execution_time:.1f}s")
                 if result.iterations:
                     st.metric("Iterationen", result.iterations)
-                if result.log_file:
-                    st.caption(f"Log: {result.log_file}")
 
         else:
-            # Fehler
             st.error(f"Fehler: {result.error}")
 
-            st.markdown("**Checkliste:**")
-            st.markdown(f"""
-- [ ] LLM-Server laeuft auf `{st.session_state.config.base_url}`?
-- [ ] Docker-Daemon gestartet? (bei Docker-Umgebung)
-- [ ] Modell `{st.session_state.config.model_name}` geladen?
-            """)
+
+# =============================================================================
+# Tab: Dokumentations-Workflow
+# =============================================================================
+with tab_workflow:
+    st.subheader("📁 Automatische Dokumentations-Erstellung")
+
+    st.markdown("""
+    Dieser Workflow analysiert ein Verzeichnis und erstellt automatisch
+    eine detaillierte Dokumentation. Das funktioniert in mehreren Phasen:
+
+    1. **Discover**: Dateien finden und auflisten
+    2. **Categorize**: Nach Typ gruppieren
+    3. **Analyze**: Jede Datei analysieren (mit Chunking fuer grosse Dateien)
+    4. **Summarize**: Modul-Zusammenfassungen erstellen
+    5. **Document**: Finale Dokumentation generieren
+    """)
+
+    st.divider()
+
+    # Pfad-Eingabe
+    col_path, col_browse = st.columns([4, 1])
+
+    with col_path:
+        source_path = st.text_input(
+            "📂 Quellverzeichnis",
+            value="/home/user/RLM-Alexzhang-01",
+            help="Pfad zum zu dokumentierenden Verzeichnis",
+        )
+
+    with col_browse:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("📁 Pruefen"):
+            if Path(source_path).exists():
+                st.success("✓ Pfad existiert")
+            else:
+                st.error("✗ Pfad nicht gefunden")
+
+    # Erweiterte Optionen
+    with st.expander("⚙️ Erweiterte Optionen"):
+        col_opt1, col_opt2 = st.columns(2)
+
+        with col_opt1:
+            output_path = st.text_input(
+                "Ausgabe-Verzeichnis",
+                value="./documentation",
+            )
+            max_file_size = st.number_input(
+                "Max. Dateigroesse (KB)",
+                min_value=10,
+                max_value=1000,
+                value=100,
+            )
+
+        with col_opt2:
+            file_extensions = st.text_input(
+                "Dateiendungen (kommagetrennt)",
+                value=".py, .js, .ts, .md, .json, .yaml",
+            )
+            ignore_patterns = st.text_input(
+                "Ignorieren (kommagetrennt)",
+                value="__pycache__, node_modules, .git, .venv",
+            )
+
+    st.divider()
+
+    # Workflow starten
+    col_start, col_stop = st.columns([1, 1])
+
+    with col_start:
+        start_workflow = st.button(
+            "🚀 Workflow starten",
+            type="primary",
+            use_container_width=True,
+            disabled=not source_path or st.session_state.workflow_running,
+        )
+
+    with col_stop:
+        stop_workflow = st.button(
+            "⏹️ Stoppen",
+            use_container_width=True,
+            disabled=not st.session_state.workflow_running,
+        )
+
+    # Workflow ausfuehren
+    if start_workflow and source_path:
+        st.session_state.workflow_running = True
+        st.session_state.workflow_progress = []
+        st.session_state.workflow_result = None
+
+        # Konfiguration erstellen
+        extensions = [e.strip() for e in file_extensions.split(",")]
+        ignores = [i.strip() for i in ignore_patterns.split(",")]
+
+        workflow_config = WorkflowConfig(
+            source_path=source_path,
+            output_path=output_path,
+            file_extensions=extensions,
+            ignore_patterns=ignores,
+            max_file_size=max_file_size * 1024,
+        )
+
+        # Progress-Container
+        progress_container = st.container()
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        # Workflow erstellen und ausfuehren
+        workflow = DocumentationWorkflow(
+            backend=st.session_state.backend,
+            workflow_config=workflow_config,
+        )
+
+        try:
+            for progress in workflow.run():
+                # Progress anzeigen
+                progress_bar.progress(progress.progress)
+                status_text.markdown(f"**{progress.stage.upper()}**: {progress.message}")
+
+                st.session_state.workflow_progress.append(progress)
+
+                if progress.is_error:
+                    st.error(progress.detail or progress.message)
+
+                # Check fuer Stop
+                if stop_workflow:
+                    workflow.stop()
+                    break
+
+            st.session_state.workflow_result = workflow.state
+            st.session_state.workflow_running = False
+
+            if workflow.state.final_documentation:
+                st.success("✅ Dokumentation erfolgreich erstellt!")
+
+        except Exception as e:
+            st.error(f"Workflow-Fehler: {e}")
+            st.session_state.workflow_running = False
+
+    # Ergebnis anzeigen
+    if st.session_state.workflow_result:
+        state = st.session_state.workflow_result
+
+        st.divider()
+        st.subheader("📄 Ergebnis")
+
+        # Statistiken
+        col_stat1, col_stat2, col_stat3 = st.columns(3)
+        with col_stat1:
+            st.metric("Dateien", len(state.files))
+        with col_stat2:
+            st.metric("Kategorien", len(state.categories))
+        with col_stat3:
+            st.metric("Zusammenfassungen", len(state.summaries))
+
+        # Dokumentation anzeigen
+        if state.final_documentation:
+            with st.expander("📖 Generierte Dokumentation", expanded=True):
+                st.markdown(state.final_documentation)
+
+                # Download-Button
+                st.download_button(
+                    "⬇️ Als Markdown herunterladen",
+                    data=state.final_documentation,
+                    file_name="DOCUMENTATION.md",
+                    mime="text/markdown",
+                )
+
+        # Fehler anzeigen
+        if state.errors:
+            with st.expander(f"⚠️ Fehler ({len(state.errors)})"):
+                for error in state.errors:
+                    st.warning(error)
 
 
 # =============================================================================
@@ -283,8 +469,6 @@ with tab_logs:
                 for i, entry in enumerate(entries):
                     with st.expander(f"Eintrag {i+1}", expanded=i==0):
                         st.json(entry)
-            else:
-                st.warning("Konnte Log-Datei nicht lesen")
 
     st.divider()
 
@@ -314,38 +498,50 @@ with tab_help:
 **RLM (Recursive Language Models)** ist ein Inferenz-Paradigma, das
 Sprachmodellen ermoeglicht, Code in einer REPL-Umgebung auszufuehren.
 
-### Wie funktioniert es?
+### Wie funktioniert der Dokumentations-Workflow?
 
-1. **Kontext**: Du gibst Daten/Code/Text ein
-2. **Aufgabe**: Du beschreibst, was damit gemacht werden soll
-3. **RLM-Loop**: Das LLM generiert Python-Code, fuehrt ihn aus, sieht das Ergebnis, generiert mehr Code...
-4. **Ergebnis**: Das LLM gibt eine finale Antwort
+Das Problem: Unser LLM hat ein begrenztes Kontextfenster (4096 Tokens).
+Ein grosses Projekt passt nicht auf einmal hinein.
 
-### Umgebungen
+**Loesung: Hierarchische Analyse mit Wissens-Akkumulation**
 
-| Umgebung | Beschreibung |
-|----------|--------------|
-| **docker** | Code laeuft isoliert in Docker-Container (sicher) |
-| **local** | Code laeuft im gleichen Prozess (schneller) |
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Dateien    │ --> │ Kategorien  │ --> │  Analysen   │
+│  finden     │     │  bilden     │     │ (chunked)   │
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+┌─────────────┐     ┌─────────────┐            │
+│   Finale    │ <-- │   Modul-    │ <----------┘
+│   Doku      │     │   Summaries │
+└─────────────┘     └─────────────┘
+```
 
-### Sicherheit (Docker)
+**Strategien:**
+1. **Chunking**: Grosse Dateien werden in Teile aufgeteilt
+2. **Rolling Summary**: Alte Infos werden komprimiert
+3. **Hierarchisch**: Erst Struktur, dann Details
+4. **Akkumulierend**: Wissen wird aufgebaut
 
-In der Docker-Umgebung sind gefaehrliche Befehle blockiert:
-- `os.system()`, `subprocess`, etc.
-- `eval()`, `exec()`, `open()`
-- Netzwerkzugriffe
+### Kontextmanagement
+
+| Problem | Loesung |
+|---------|---------|
+| Datei zu gross | Chunking (2000 Zeichen/Chunk) |
+| Zu viele Dateien | Kategorisierung + Sampling |
+| Wissen geht verloren | Knowledge Buffer |
+| Buffer zu gross | Komprimierung alter Eintraege |
 
 ### Troubleshooting
 
-**LLM-Server nicht erreichbar?**
-```bash
-curl http://0.0.0.0:5567/v1/models
-```
+**Workflow bricht ab?**
+- Pruefe LLM-Server Verbindung
+- Reduziere Max. Dateigroesse
+- Ignoriere mehr Verzeichnisse
 
-**Docker-Fehler?**
-```bash
-docker info
-```
+**Dokumentation unvollstaendig?**
+- Erhoehe Max. Iterationen
+- Pruefe Token-Limits
 
 **Mehr Infos?**
 Siehe `docs/installation-de.md`
@@ -356,4 +552,4 @@ Siehe `docs/installation-de.md`
 # Footer
 # =============================================================================
 st.divider()
-st.caption("RLM GUI v1.0 | Powered by Streamlit")
+st.caption("RLM GUI v2.0 | Port 8052 | Powered by Streamlit")
