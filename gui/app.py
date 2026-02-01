@@ -466,6 +466,10 @@ with tab_workflow:
     3. **Analyze**: Jede Datei analysieren (mit Chunking fuer grosse Dateien)
     4. **Summarize**: Modul-Zusammenfassungen erstellen
     5. **Document**: Finale Dokumentation generieren
+
+    🧠 **Memory-Integration**: Wissen aus frueheren Dateien wird gespeichert
+    und fuer die Analyse spaeterer Dateien wiederverwendet - so versteht
+    das System dateiuebergreifende Zusammenhaenge.
     """)
 
     st.divider()
@@ -557,10 +561,11 @@ with tab_workflow:
         progress_bar = st.progress(0)
         status_text = st.empty()
 
-        # Workflow erstellen und ausfuehren
+        # Workflow erstellen und ausfuehren - mit Memory-System fuer dateiuebergreifende Zusammenhaenge
         workflow = DocumentationWorkflow(
             backend=st.session_state.backend,
             workflow_config=workflow_config,
+            memory_system=st.session_state.memory_system,
         )
 
         try:

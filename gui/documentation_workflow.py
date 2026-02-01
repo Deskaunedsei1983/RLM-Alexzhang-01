@@ -31,6 +31,7 @@ from gui.workflow_engine import (
     PROMPTS,
 )
 from gui.rlm_backend import RLMBackend, RLMConfig, RLMResult
+from gui.memory_system import MemorySystem
 
 
 @dataclass
@@ -59,6 +60,7 @@ class DocumentationWorkflow:
         backend: RLMBackend,
         workflow_config: WorkflowConfig,
         progress_callback: Optional[Callable[[WorkflowProgress], None]] = None,
+        memory_system: Optional[MemorySystem] = None,
     ):
         self.backend = backend
         self.config = workflow_config
@@ -67,7 +69,10 @@ class DocumentationWorkflow:
         self.context_manager = ContextManager(
             max_context=workflow_config.available_context
         )
+        # Memory-System fuer persistente dateiuebergreifende Zusammenhaenge
+        self.memory = memory_system
         self._stop_requested = False
+        self._workflow_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     def stop(self):
         """Stoppt den Workflow."""
@@ -174,6 +179,15 @@ class DocumentationWorkflow:
 
         if result.success:
             self.context_manager.add_knowledge("projekt_struktur", result.response)
+            # Auch im Memory-System speichern (Long-Term fuer Wiederverwendung)
+            if self.memory:
+                self.memory.add_long_term(
+                    key=f"{self._workflow_id}_struktur",
+                    content=result.response,
+                    source=self.config.source_path,
+                    entry_type="project_structure",
+                    relevance=1.0,
+                )
             yield WorkflowProgress(
                 stage="discover",
                 message="Projektstruktur analysiert",
@@ -205,6 +219,15 @@ class DocumentationWorkflow:
         ])
 
         self.context_manager.add_knowledge("kategorien", cat_summary)
+        # Im Memory speichern
+        if self.memory:
+            self.memory.add_short_term(
+                key=f"{self._workflow_id}_kategorien",
+                content=cat_summary,
+                source=self.config.source_path,
+                entry_type="categories",
+                relevance=0.8,
+            )
 
         yield WorkflowProgress(
             stage="categorize",
@@ -269,6 +292,25 @@ class DocumentationWorkflow:
                     f"datei:{file_info.name}",
                     summary[:500],  # Komprimiert speichern
                 )
+                # Im Memory-System speichern fuer dateiuebergreifende Zusammenhaenge
+                if self.memory:
+                    # Short-Term fuer aktuelle Session
+                    self.memory.add_short_term(
+                        key=f"{self._workflow_id}_file_{file_info.name}",
+                        content=summary,
+                        source=f"{self.config.source_path}:{file_info.path}",
+                        entry_type="file_summary",
+                        relevance=0.7 + (0.3 * (i / total)),  # Spaetere Dateien haben mehr Kontext
+                    )
+                    # Wichtige Dateien (Hauptmodule) ins Long-Term
+                    if file_info.category == "source_code" and len(summary) > 200:
+                        self.memory.add_long_term(
+                            key=f"file_{file_info.name}",
+                            content=summary[:400],
+                            source=file_info.path,
+                            entry_type="important_file",
+                            relevance=0.9,
+                        )
 
     def _analyze_file(
         self,
@@ -276,6 +318,15 @@ class DocumentationWorkflow:
         content: str,
     ) -> Generator[WorkflowProgress, None, Optional[str]]:
         """Analysiert eine einzelne Datei, ggf. in Chunks."""
+
+        # Hole vorhandenes Wissen aus Memory fuer dateiuebergreifenden Kontext
+        cross_file_context = ""
+        if self.memory:
+            cross_file_context = self.memory.get_relevant_context(
+                max_chars=800,
+                include_long_term=True,
+                include_short_term=True,
+            )
 
         # Pruefen ob Chunking noetig
         if len(content) <= self.config.chunking.max_chunk_size:
@@ -285,15 +336,14 @@ class DocumentationWorkflow:
                 f"Analysiere die Datei {file_info.name}",
             )
 
-            prompt = PROMPTS["analyze_file"].format(
-                knowledge=self.context_manager.knowledge_buffer[:1000],
-                filename=file_info.name,
-                content=content[:2000],
-            )
+            # Kombiniere lokales Wissen mit Memory-Kontext
+            combined_knowledge = self.context_manager.knowledge_buffer[:800]
+            if cross_file_context:
+                combined_knowledge = f"Bisheriges Projektwissen:\n{cross_file_context}\n\nAktuelle Analyse:\n{combined_knowledge}"
 
             result = self.backend.run_completion(
-                context=content[:2000],
-                aufgabe=f"Analysiere diese {file_info.extension} Datei und beschreibe Zweck und Inhalt.",
+                context=f"{combined_knowledge}\n\nDatei {file_info.name}:\n{content[:2000]}",
+                aufgabe=f"Analysiere diese {file_info.extension} Datei. Beruecksichtige das bisherige Projektwissen fuer Zusammenhaenge zu anderen Dateien.",
             )
 
             if result.success:
@@ -318,10 +368,13 @@ class DocumentationWorkflow:
             )
 
             if j == 0:
-                # Erster Chunk
+                # Erster Chunk - mit Cross-File Kontext
+                context_with_memory = chunk
+                if cross_file_context:
+                    context_with_memory = f"Projektwissen:\n{cross_file_context[:500]}\n\nDatei {file_info.name} (Teil 1):\n{chunk}"
                 result = self.backend.run_completion(
-                    context=chunk,
-                    aufgabe=f"Analysiere den Anfang der Datei {file_info.name}. Was ist der Zweck?",
+                    context=context_with_memory,
+                    aufgabe=f"Analysiere den Anfang der Datei {file_info.name}. Beruecksichtige Zusammenhaenge zum Projektwissen.",
                 )
             else:
                 # Folge-Chunks
@@ -376,6 +429,15 @@ class DocumentationWorkflow:
 
             if result.success:
                 self.context_manager.add_knowledge(f"modul:{module_name}", result.response)
+                # Module ins Long-Term Memory (wichtig fuer Wiederverwendung)
+                if self.memory:
+                    self.memory.add_long_term(
+                        key=f"module_{module_name}",
+                        content=result.response,
+                        source=f"{self.config.source_path}/{module_name}",
+                        entry_type="module_summary",
+                        relevance=0.95,
+                    )
 
         yield WorkflowProgress(
             stage="summarize",
@@ -393,8 +455,17 @@ class DocumentationWorkflow:
             progress=0.9,
         )
 
-        # Gesammeltes Wissen fuer finale Doku
+        # Gesammeltes Wissen fuer finale Doku - kombiniere ContextManager und Memory
         knowledge = self.context_manager.knowledge_buffer
+        if self.memory:
+            # Hole zusaetzlich Long-Term Wissen (Module, wichtige Dateien)
+            memory_context = self.memory.get_relevant_context(
+                max_chars=1500,
+                include_long_term=True,
+                include_short_term=False,  # Nur persistentes Wissen
+            )
+            if memory_context:
+                knowledge = f"{knowledge}\n\nPersistentes Projektwissen:\n{memory_context}"
 
         result = self.backend.run_completion(
             context=knowledge[:3500],
@@ -416,6 +487,16 @@ class DocumentationWorkflow:
 
             doc_file = output_dir / "DOCUMENTATION.md"
             doc_file.write_text(result.response, encoding='utf-8')
+
+            # Finale Doku im Long-Term Memory speichern
+            if self.memory:
+                self.memory.add_long_term(
+                    key=f"{self._workflow_id}_documentation",
+                    content=result.response[:1000],  # Kurzversion
+                    source=str(doc_file),
+                    entry_type="final_documentation",
+                    relevance=1.0,
+                )
 
             yield WorkflowProgress(
                 stage="document",
