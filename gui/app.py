@@ -26,6 +26,11 @@ from gui.documentation_workflow import (
     DocumentationWorkflow,
     WorkflowProgress,
 )
+from gui.memory_system import MemorySystem
+from gui.smart_document_processor import (
+    SmartDocumentProcessor,
+    ProcessingConfig,
+)
 
 
 # =============================================================================
@@ -62,6 +67,15 @@ if "workflow_progress" not in st.session_state:
 
 if "workflow_result" not in st.session_state:
     st.session_state.workflow_result = None
+
+if "memory_system" not in st.session_state:
+    st.session_state.memory_system = MemorySystem(memory_dir="./gui/memory")
+
+if "smart_processor" not in st.session_state:
+    st.session_state.smart_processor = None
+
+if "smart_result" not in st.session_state:
+    st.session_state.smart_result = None
 
 
 # =============================================================================
@@ -157,9 +171,10 @@ und sich selbst rekursiv aufzurufen.
 """)
 
 # Tabs fuer verschiedene Bereiche
-tab_main, tab_workflow, tab_logs, tab_help = st.tabs([
+tab_main, tab_workflow, tab_memory, tab_logs, tab_help = st.tabs([
     "📝 Einfache Ausfuehrung",
     "📁 Dokumentations-Workflow",
+    "🧠 Memory & Smart Processing",
     "📊 Logs",
     "❓ Hilfe"
 ])
@@ -239,11 +254,26 @@ with tab_main:
                         disabled=True,
                     )
 
-                # Warnung bei grossem Kontext
+                # Smart Processing Option fuer grosse Dateien
                 if total_size > 3000:
-                    st.warning(f"⚠️ Grosser Kontext ({total_size} Zeichen). Bei Token-Limit wird automatisch gekuerzt.")
+                    st.warning(f"⚠️ Grosser Kontext ({total_size} Zeichen).")
+                    use_smart_processing = st.checkbox(
+                        "🧠 Smart Processing aktivieren (Chunking + Memory)",
+                        value=True,
+                        help="Verarbeitet grosse Dateien intelligent mit Chunking und Memory-System"
+                    )
+                else:
+                    use_smart_processing = False
 
         default_task = "Analysiere die hochgeladenen Dateien und beschreibe deren Inhalt und Zweck."
+
+    # Smart Processing Flag speichern
+    if 'use_smart_processing' not in dir():
+        use_smart_processing = False
+
+    # uploaded_files Variable sicherstellen
+    if 'uploaded_files' not in dir():
+        uploaded_files = None
 
     else:  # Text eingeben
         context = st.text_area(
@@ -291,17 +321,90 @@ with tab_main:
 
     # Ausfuehrung
     if run_button:
-        with st.spinner("RLM laeuft... Dies kann einige Minuten dauern."):
-            result = st.session_state.backend.run_completion(context, aufgabe)
-            st.session_state.result = result
+        # Pruefe ob Smart Processing verwendet werden soll
+        if use_smart_processing and len(context) > 3000:
+            # Smart Processing mit Chunking und Memory
+            st.info("🧠 Smart Processing aktiv - Verarbeite mit Chunking und Memory...")
 
-            # Zur History hinzufuegen
-            ctx_preview = uploaded_files_info if uploaded_files_info else (context[:100] + "..." if len(context) > 100 else context)
-            st.session_state.history.append({
-                "context": ctx_preview,
-                "aufgabe": aufgabe,
-                "result": result,
-            })
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            def progress_callback(progress: float, message: str):
+                progress_bar.progress(progress)
+                status_text.text(message)
+
+            # Smart Processor initialisieren
+            processor_config = ProcessingConfig(
+                max_chunk_size=2500,
+                chunk_overlap=300,
+                max_context_size=2000,
+                progress_callback=progress_callback,
+            )
+
+            processor = SmartDocumentProcessor(
+                backend=st.session_state.backend,
+                memory=st.session_state.memory_system,
+                config=processor_config,
+            )
+
+            # Verarbeite jede hochgeladene Datei
+            if uploaded_files:
+                all_results = []
+                for uploaded_file in uploaded_files:
+                    content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
+                    doc_result = processor.process_document(
+                        content=content,
+                        filename=uploaded_file.name,
+                        aufgabe=aufgabe,
+                    )
+                    all_results.append(doc_result)
+
+                # Kombiniere Ergebnisse
+                combined_answer = "\n\n---\n\n".join([
+                    f"## {r.filename}\n{r.answer}"
+                    for r in all_results
+                ])
+
+                from gui.rlm_backend import RLMResult
+                st.session_state.result = RLMResult(
+                    success=True,
+                    response=combined_answer,
+                    execution_time=sum(r.processing_time for r in all_results),
+                )
+                st.session_state.smart_result = all_results
+            else:
+                # Einzelner Text
+                doc_result = processor.process_document(
+                    content=context,
+                    filename="input.txt",
+                    aufgabe=aufgabe,
+                )
+                from gui.rlm_backend import RLMResult
+                st.session_state.result = RLMResult(
+                    success=doc_result.success,
+                    response=doc_result.answer,
+                    execution_time=doc_result.processing_time,
+                    error=doc_result.error,
+                )
+                st.session_state.smart_result = [doc_result]
+
+            progress_bar.progress(1.0)
+            status_text.text("✅ Verarbeitung abgeschlossen!")
+
+        else:
+            # Normale Verarbeitung
+            with st.spinner("RLM laeuft... Dies kann einige Minuten dauern."):
+                result = st.session_state.backend.run_completion(context, aufgabe)
+                st.session_state.result = result
+                st.session_state.smart_result = None
+
+        # Zur History hinzufuegen
+        ctx_preview = uploaded_files_info if uploaded_files_info else (context[:100] + "..." if len(context) > 100 else context)
+        st.session_state.history.append({
+            "context": ctx_preview,
+            "aufgabe": aufgabe,
+            "result": st.session_state.result,
+        })
 
     # Ergebnis anzeigen
     if st.session_state.result:
@@ -321,6 +424,28 @@ with tab_main:
                 st.metric("Zeit", f"{result.execution_time:.1f}s")
                 if result.iterations:
                     st.metric("Iterationen", result.iterations)
+
+                # Smart Processing Details
+                if st.session_state.smart_result:
+                    total_chunks = sum(r.total_chunks for r in st.session_state.smart_result)
+                    st.metric("Chunks", total_chunks)
+
+                    # Memory Stats
+                    mem_stats = st.session_state.memory_system.get_stats()
+                    st.metric("Memory (ST/LT)", f"{mem_stats.short_term_entries}/{mem_stats.long_term_entries}")
+
+            # Smart Processing Details anzeigen
+            if st.session_state.smart_result:
+                with st.expander("🧠 Smart Processing Details"):
+                    for doc_result in st.session_state.smart_result:
+                        st.markdown(f"**{doc_result.filename}**")
+                        st.markdown(f"- Chunks: {doc_result.total_chunks}")
+                        st.markdown(f"- Zeit: {doc_result.processing_time:.1f}s")
+
+                        if doc_result.chunk_results:
+                            st.markdown("**Chunk-Zusammenfassungen:**")
+                            for cr in doc_result.chunk_results[:3]:
+                                st.markdown(f"  - Teil {cr.chunk_num}: {cr.summary[:100]}...")
 
         else:
             st.error(f"Fehler: {result.error}")
@@ -501,6 +626,144 @@ with tab_workflow:
 
 
 # =============================================================================
+# Tab: Memory & Smart Processing
+# =============================================================================
+with tab_memory:
+    st.subheader("🧠 Memory System & Smart Document Processing")
+
+    st.markdown("""
+    Das Memory-System speichert Wissen aus der Dokumentverarbeitung:
+
+    - **Short-Term Memory**: Session-basiert, wird bei Neustart geloescht
+    - **Long-Term Memory**: Persistent, bleibt erhalten
+
+    Bei der Smart-Verarbeitung grosser Dokumente werden Zwischenergebnisse
+    im Memory gespeichert und fuer spaetere Anfragen wiederverwendet.
+    """)
+
+    st.divider()
+
+    # Memory Statistiken
+    col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+
+    mem_stats = st.session_state.memory_system.get_stats()
+
+    with col_stats1:
+        st.metric("Short-Term Eintraege", mem_stats.short_term_entries)
+    with col_stats2:
+        st.metric("Long-Term Eintraege", mem_stats.long_term_entries)
+    with col_stats3:
+        st.metric("Gesamt Zeichen", f"{mem_stats.total_chars:,}")
+    with col_stats4:
+        if mem_stats.newest_entry:
+            st.metric("Letzter Eintrag", mem_stats.newest_entry[:16])
+        else:
+            st.metric("Letzter Eintrag", "-")
+
+    st.divider()
+
+    # Memory Inhalt anzeigen
+    col_mem1, col_mem2 = st.columns(2)
+
+    with col_mem1:
+        st.markdown("### 📋 Short-Term Memory")
+        short_term = st.session_state.memory_system.get_all_short_term()
+        if short_term:
+            for entry in short_term[-10:]:  # Letzte 10
+                with st.expander(f"{entry.key} ({entry.entry_type})"):
+                    st.markdown(f"**Quelle:** {entry.source}")
+                    st.markdown(f"**Zeit:** {entry.timestamp}")
+                    st.markdown(f"**Relevanz:** {entry.relevance:.2f}")
+                    st.text_area("Inhalt", entry.content, height=100, disabled=True, key=f"st_{entry.key}")
+        else:
+            st.info("Keine Short-Term Eintraege")
+
+    with col_mem2:
+        st.markdown("### 💾 Long-Term Memory")
+        long_term = st.session_state.memory_system.get_all_long_term()
+        if long_term:
+            for entry in long_term[-10:]:  # Letzte 10
+                with st.expander(f"{entry.key} ({entry.entry_type})"):
+                    st.markdown(f"**Quelle:** {entry.source}")
+                    st.markdown(f"**Zeit:** {entry.timestamp}")
+                    st.markdown(f"**Relevanz:** {entry.relevance:.2f}")
+                    st.text_area("Inhalt", entry.content, height=100, disabled=True, key=f"lt_{entry.key}")
+        else:
+            st.info("Keine Long-Term Eintraege")
+
+    st.divider()
+
+    # Memory Management
+    st.markdown("### 🗑️ Memory Management")
+
+    col_clear1, col_clear2, col_clear3 = st.columns(3)
+
+    with col_clear1:
+        if st.button("🧹 Short-Term loeschen", use_container_width=True):
+            st.session_state.memory_system.clear_short_term()
+            st.success("Short-Term Memory geloescht!")
+            st.rerun()
+
+    with col_clear2:
+        if st.button("🧹 Long-Term loeschen", use_container_width=True):
+            st.session_state.memory_system.clear_long_term()
+            st.success("Long-Term Memory geloescht!")
+            st.rerun()
+
+    with col_clear3:
+        if st.button("🧹 Alles loeschen", type="secondary", use_container_width=True):
+            st.session_state.memory_system.clear_all()
+            st.success("Gesamtes Memory geloescht!")
+            st.rerun()
+
+    st.divider()
+
+    # Smart Processing Konfiguration
+    st.markdown("### ⚙️ Smart Processing Konfiguration")
+
+    with st.expander("Einstellungen anpassen"):
+        col_cfg1, col_cfg2 = st.columns(2)
+
+        with col_cfg1:
+            chunk_size = st.slider(
+                "Chunk-Groesse (Zeichen)",
+                min_value=1000,
+                max_value=5000,
+                value=2500,
+                step=500,
+                help="Maximale Groesse eines Chunks"
+            )
+            chunk_overlap = st.slider(
+                "Chunk-Ueberlappung (Zeichen)",
+                min_value=100,
+                max_value=500,
+                value=300,
+                step=50,
+                help="Ueberlappung zwischen Chunks"
+            )
+
+        with col_cfg2:
+            max_context = st.slider(
+                "Max. Kontext-Groesse (Zeichen)",
+                min_value=1000,
+                max_value=4000,
+                value=2000,
+                step=500,
+                help="Maximale Groesse des akkumulierten Kontexts"
+            )
+            auto_promote = st.slider(
+                "Auto-Promote Schwelle",
+                min_value=0.5,
+                max_value=1.0,
+                value=0.8,
+                step=0.1,
+                help="Relevanz-Schwelle fuer automatische Long-Term Speicherung"
+            )
+
+        st.info(f"Aktuelle Konfiguration: Chunks {chunk_size} Zeichen, Overlap {chunk_overlap}, Kontext max {max_context}")
+
+
+# =============================================================================
 # Tab: Logs
 # =============================================================================
 with tab_logs:
@@ -589,6 +852,31 @@ Ein grosses Projekt passt nicht auf einmal hinein.
 | Wissen geht verloren | Knowledge Buffer |
 | Buffer zu gross | Komprimierung alter Eintraege |
 
+### 🧠 Smart Document Processing
+
+Fuer grosse Dateien (>3000 Zeichen) steht Smart Processing zur Verfuegung:
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Grosse     │ --> │  Chunking   │ --> │  Pro Chunk  │
+│  Datei      │     │  (2500 Z.)  │     │  Analysieren│
+└─────────────┘     └─────────────┘     └──────┬──────┘
+                                               │
+┌─────────────┐     ┌─────────────┐            │
+│   Finale    │ <-- │   Memory    │ <----------┘
+│   Synthese  │     │  Speichern  │
+└─────────────┘     └─────────────┘
+```
+
+**Memory-System:**
+- **Short-Term**: Temporaer, Session-basiert
+- **Long-Term**: Persistent, bleibt nach Neustart
+
+**Vorteile:**
+- Verarbeitet Dateien beliebiger Groesse
+- Akkumuliert Wissen ueber Chunks
+- Wiederverwendung bei aehnlichen Anfragen
+
 ### Troubleshooting
 
 **Workflow bricht ab?**
@@ -600,6 +888,10 @@ Ein grosses Projekt passt nicht auf einmal hinein.
 - Erhoehe Max. Iterationen
 - Pruefe Token-Limits
 
+**Smart Processing langsam?**
+- Reduziere Chunk-Groesse
+- Weniger Chunks = schneller
+
 **Mehr Infos?**
 Siehe `docs/installation-de.md`
     """)
@@ -609,4 +901,4 @@ Siehe `docs/installation-de.md`
 # Footer
 # =============================================================================
 st.divider()
-st.caption("RLM GUI v2.0 | Port 8052 | Powered by Streamlit")
+st.caption("RLM GUI v2.1 | Port 8052 | Smart Processing + Memory | Powered by Streamlit")
