@@ -169,49 +169,104 @@ tab_main, tab_workflow, tab_logs, tab_help = st.tabs([
 # Tab: Einfache Ausfuehrung
 # =============================================================================
 with tab_main:
-    # Beispiel-Auswahl
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        st.markdown("**Beispiel laden:**")
-    with col2:
+    # Kontext-Quelle auswaehlen
+    st.subheader("📄 Kontext / Daten")
+
+    context_source = st.radio(
+        "Kontext-Quelle",
+        options=["✏️ Text eingeben", "📁 Datei(en) hochladen", "📋 Beispiel laden"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    # Kontext basierend auf Quelle
+    context = ""
+    uploaded_files_info = ""
+
+    if context_source == "📋 Beispiel laden":
         example = st.selectbox(
-            "Beispiel",
-            options=["-- Eigene Eingabe --"] + list(EXAMPLE_CONTEXTS.keys()),
-            label_visibility="collapsed",
+            "Beispiel auswaehlen",
+            options=list(EXAMPLE_CONTEXTS.keys()),
+        )
+        context = EXAMPLE_CONTEXTS.get(example, "")
+        default_task = EXAMPLE_TASKS.get(example, "")
+
+        st.text_area(
+            "Vorschau",
+            value=context,
+            height=200,
+            disabled=True,
         )
 
-    # Kontext und Aufgabe
-    col_context, col_task = st.columns(2)
+    elif context_source == "📁 Datei(en) hochladen":
+        uploaded_files = st.file_uploader(
+            "Dateien hochladen",
+            type=["txt", "py", "js", "ts", "json", "yaml", "yml", "md", "csv", "xml", "html", "css", "java", "c", "cpp", "h", "go", "rs", "sh"],
+            accept_multiple_files=True,
+            help="Unterstuetzte Formate: Text, Code, Markdown, JSON, YAML, CSV, etc.",
+        )
 
-    with col_context:
-        st.subheader("📄 Kontext / Daten")
-        if example != "-- Eigene Eingabe --":
-            default_context = EXAMPLE_CONTEXTS.get(example, "")
-        else:
-            default_context = ""
+        if uploaded_files:
+            # Dateien einlesen und kombinieren
+            file_contents = []
+            total_size = 0
 
+            for uploaded_file in uploaded_files:
+                try:
+                    content = uploaded_file.read().decode('utf-8', errors='ignore')
+                    file_size = len(content)
+                    total_size += file_size
+
+                    # Datei-Header hinzufuegen
+                    file_contents.append(f"### Datei: {uploaded_file.name} ({file_size} Zeichen)\n```\n{content}\n```")
+
+                    uploaded_files_info += f"- {uploaded_file.name} ({file_size} Zeichen)\n"
+                except Exception as e:
+                    st.warning(f"Konnte {uploaded_file.name} nicht lesen: {e}")
+
+            if file_contents:
+                context = "\n\n".join(file_contents)
+
+                # Info anzeigen
+                st.success(f"✅ {len(uploaded_files)} Datei(en) geladen ({total_size} Zeichen gesamt)")
+
+                with st.expander("📄 Geladene Dateien anzeigen"):
+                    st.markdown(uploaded_files_info)
+                    st.text_area(
+                        "Inhalt (Vorschau)",
+                        value=context[:5000] + ("..." if len(context) > 5000 else ""),
+                        height=200,
+                        disabled=True,
+                    )
+
+                # Warnung bei grossem Kontext
+                if total_size > 3000:
+                    st.warning(f"⚠️ Grosser Kontext ({total_size} Zeichen). Bei Token-Limit wird automatisch gekuerzt.")
+
+        default_task = "Analysiere die hochgeladenen Dateien und beschreibe deren Inhalt und Zweck."
+
+    else:  # Text eingeben
         context = st.text_area(
-            "Kontext",
-            value=default_context,
-            height=300,
-            label_visibility="collapsed",
+            "Kontext eingeben",
+            value="",
+            height=250,
             placeholder="Gib hier deinen Kontext ein (Daten, Code, Text...)",
-        )
-
-    with col_task:
-        st.subheader("🎯 Aufgabe / Frage")
-        if example != "-- Eigene Eingabe --":
-            default_task = EXAMPLE_TASKS.get(example, "")
-        else:
-            default_task = ""
-
-        aufgabe = st.text_area(
-            "Aufgabe",
-            value=default_task,
-            height=300,
             label_visibility="collapsed",
-            placeholder="Was soll mit dem Kontext gemacht werden?",
         )
+        default_task = ""
+
+    st.divider()
+
+    # Aufgabe
+    st.subheader("🎯 Aufgabe / Frage")
+
+    aufgabe = st.text_area(
+        "Aufgabe",
+        value=default_task if 'default_task' in dir() else "",
+        height=100,
+        label_visibility="collapsed",
+        placeholder="Was soll mit dem Kontext gemacht werden?",
+    )
 
     # Ausfuehren Button
     st.divider()
@@ -227,11 +282,12 @@ with tab_main:
 
     with col_info:
         if not context:
-            st.warning("Bitte Kontext eingeben")
+            st.warning("Bitte Kontext eingeben oder Datei hochladen")
         elif not aufgabe:
             st.warning("Bitte Aufgabe eingeben")
         else:
-            st.info(f"Umgebung: {environment} | Max Iterationen: {max_iterations}")
+            ctx_len = len(context)
+            st.info(f"Umgebung: {environment} | Kontext: {ctx_len} Zeichen | Max Iter: {max_iterations}")
 
     # Ausfuehrung
     if run_button:
@@ -240,8 +296,9 @@ with tab_main:
             st.session_state.result = result
 
             # Zur History hinzufuegen
+            ctx_preview = uploaded_files_info if uploaded_files_info else (context[:100] + "..." if len(context) > 100 else context)
             st.session_state.history.append({
-                "context": context[:100] + "..." if len(context) > 100 else context,
+                "context": ctx_preview,
                 "aufgabe": aufgabe,
                 "result": result,
             })
