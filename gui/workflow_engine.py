@@ -214,6 +214,9 @@ class FileDiscovery:
         if not root_path.exists():
             return files
 
+        # Pruefe ob Wildcard verwendet wird (alle Dateien)
+        include_all = ".*" in config.file_extensions or "*" in config.file_extensions
+
         for file_path in root_path.rglob("*"):
             # Ignoriere Verzeichnisse
             if file_path.is_dir():
@@ -225,8 +228,16 @@ class FileDiscovery:
 
             # Pruefe Extension
             ext = file_path.suffix.lower()
-            if ext not in config.file_extensions and ext not in cls.BINARY_EXTENSIONS:
-                continue
+
+            # Bei Wildcard: Alle nicht-binaeren Dateien einschliessen
+            if include_all:
+                # Binaere Dateien trotzdem ausschliessen
+                if ext in cls.BINARY_EXTENSIONS:
+                    continue
+            else:
+                # Normale Pruefung: Extension muss in der Liste sein
+                if ext not in config.file_extensions and ext not in cls.BINARY_EXTENSIONS:
+                    continue
 
             # Pruefe Groesse
             try:
