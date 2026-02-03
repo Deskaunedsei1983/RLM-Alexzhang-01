@@ -518,6 +518,32 @@ with tab_workflow:
                 value="__pycache__, node_modules, .git, .venv",
             )
 
+        st.divider()
+
+        # Analysetiefe-Regler
+        st.markdown("**Analysetiefe** (fuer grosse Projekte reduzieren)")
+        analysis_depth = st.slider(
+            "Analysetiefe",
+            min_value=1,
+            max_value=4,
+            value=2,
+            help="""
+            1 = Nur Dateiliste + Struktur (sehr schnell, 100k+ Dateien)
+            2 = + Dateianalyse (Standard)
+            3 = + Modul-Zusammenfassungen
+            4 = + Vollstaendige LLM-Dokumentation
+            """,
+            label_visibility="collapsed",
+        )
+
+        depth_labels = {
+            1: "🚀 Schnell: Nur Struktur (fuer 100k+ Dateien)",
+            2: "⚖️ Standard: Struktur + Dateianalyse",
+            3: "📊 Ausfuehrlich: + Modul-Summaries",
+            4: "📖 Vollstaendig: + LLM-Dokumentation",
+        }
+        st.info(depth_labels.get(analysis_depth, ""))
+
     st.divider()
 
     # Workflow starten
@@ -566,6 +592,7 @@ with tab_workflow:
             backend=st.session_state.backend,
             workflow_config=workflow_config,
             memory_system=st.session_state.memory_system,
+            analysis_depth=analysis_depth,  # 1-4, Standard ist 2
         )
 
         try:
