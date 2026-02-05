@@ -31,6 +31,10 @@ from gui.documentation_workflow import (
     DocumentationWorkflow,
     WorkflowProgress,
 )
+from gui.rlm_workflow import (
+    RLMCentricWorkflow,
+    RLMWorkflowProgress,
+)
 from gui.memory_system import MemorySystem
 from gui.smart_document_processor import (
     SmartDocumentProcessor,
@@ -462,20 +466,41 @@ with tab_main:
 with tab_workflow:
     st.subheader("📁 Automatische Dokumentations-Erstellung")
 
-    st.markdown("""
-    Dieser Workflow analysiert ein Verzeichnis und erstellt automatisch
-    eine detaillierte Dokumentation. Das funktioniert in mehreren Phasen:
+    # Auswahl des Workflow-Modus
+    workflow_mode = st.radio(
+        "Workflow-Modus",
+        options=["🔄 RLM-Centric (empfohlen)", "🤖 Agentic (Python-gesteuert)"],
+        horizontal=True,
+        help="RLM-Centric: Das LLM steuert den Prozess selbst via REPL. Agentic: Python iteriert ueber Dateien."
+    )
 
-    1. **Discover**: Dateien finden und auflisten
-    2. **Categorize**: Nach Typ gruppieren
-    3. **Analyze**: Jede Datei analysieren (mit Chunking fuer grosse Dateien)
-    4. **Summarize**: Modul-Zusammenfassungen erstellen
-    5. **Document**: Finale Dokumentation generieren
+    if "RLM-Centric" in workflow_mode:
+        st.markdown("""
+        **RLM-Centric Modus** - Das LLM steuert den gesamten Prozess:
 
-    🧠 **Memory-Integration**: Wissen aus frueheren Dateien wird gespeichert
-    und fuer die Analyse spaeterer Dateien wiederverwendet - so versteht
-    das System dateiuebergreifende Zusammenhaenge.
-    """)
+        1. Python sammelt nur Dateipfade
+        2. **EIN** RLM-Aufruf mit allen Pfaden
+        3. LLM nutzt REPL um Dateien zu lesen
+        4. LLM chunked grosse Dateien **SELBST**
+        5. LLM ruft sich **SELBST** rekursiv auf (llm_query)
+
+        ✅ Ideal fuer grosse Projekte (100k+ Dateien)
+        ✅ Kein Python Stack-Overflow
+        ✅ Echtes RLM-Paradigma
+        """)
+    else:
+        st.markdown("""
+        **Agentic Modus** - Python steuert den Prozess:
+
+        1. **Discover**: Dateien finden und auflisten
+        2. **Categorize**: Nach Typ gruppieren
+        3. **Analyze**: Jede Datei einzeln analysieren
+        4. **Summarize**: Modul-Zusammenfassungen
+        5. **Document**: Finale Dokumentation
+
+        ⚠️ Bei vielen Dateien langsamer
+        ⚠️ Moegliche Stack-Probleme bei 10k+ Dateien
+        """)
 
     st.divider()
 
@@ -592,13 +617,25 @@ with tab_workflow:
         progress_bar = st.progress(0)
         status_text = st.empty()
 
-        # Workflow erstellen und ausfuehren - mit Memory-System fuer dateiuebergreifende Zusammenhaenge
-        workflow = DocumentationWorkflow(
-            backend=st.session_state.backend,
-            workflow_config=workflow_config,
-            memory_system=st.session_state.memory_system,
-            analysis_depth=analysis_depth,  # 1-4, Standard ist 2
-        )
+        # Workflow basierend auf Modus erstellen
+        use_rlm_centric = "RLM-Centric" in workflow_mode
+
+        if use_rlm_centric:
+            # RLM-Centric: Das LLM steuert den Prozess
+            st.info("🔄 RLM-Centric Modus: Das LLM steuert die Analyse via REPL...")
+            workflow = RLMCentricWorkflow(
+                backend=st.session_state.backend,
+                config=workflow_config,
+                memory=st.session_state.memory_system,
+            )
+        else:
+            # Agentic: Python steuert den Prozess
+            workflow = DocumentationWorkflow(
+                backend=st.session_state.backend,
+                workflow_config=workflow_config,
+                memory_system=st.session_state.memory_system,
+                analysis_depth=analysis_depth,
+            )
 
         try:
             for progress in workflow.run():
