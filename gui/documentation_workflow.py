@@ -24,11 +24,16 @@ Analysetiefe (1-4):
 import os
 import sys
 import time
+import gc
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Iterator, Callable, List
 from enum import Enum
+
+# WICHTIG: Rekursionslimit fuer grosse Dateimengen erhoehen
+# Das RLM-Framework nutzt intern Rekursion
+sys.setrecursionlimit(100000)
 
 from gui.workflow_engine import (
     WorkflowStage,
@@ -272,6 +277,7 @@ class DocumentationWorkflow:
         Phase 3: Dateien analysieren - ITERATIV ohne Rekursion!
 
         Verarbeitet Dateien in Batches um Stack-Overflow zu vermeiden.
+        Nach jedem Batch wird Garbage Collection ausgefuehrt.
         """
         self.state.stage = WorkflowStage.ANALYZE
 
@@ -289,13 +295,14 @@ class DocumentationWorkflow:
 
         yield WorkflowProgress(
             stage="analyze",
-            message=f"Analysiere {total} Dateien in Batches...",
+            message=f"Analysiere {total} Dateien in Batches a {self.BATCH_SIZE}...",
             progress=0.3,
         )
 
         # Verarbeite in Batches
         processed = 0
         batch_num = 0
+        errors_in_row = 0  # Zaehle aufeinanderfolgende Fehler
 
         while processed < total:
             if self._stop_requested:
@@ -334,7 +341,29 @@ class DocumentationWorkflow:
                     continue
 
                 # Analysiere Datei - DIREKT, ohne Generator
-                summary = self._analyze_file_direct(file_info, content)
+                # Mit Fehlerbehandlung fuer Stack-Probleme
+                try:
+                    summary = self._analyze_file_direct(file_info, content)
+                    errors_in_row = 0  # Reset bei Erfolg
+                except RecursionError:
+                    # Bei RecursionError: Garbage Collection und Retry
+                    gc.collect()
+                    try:
+                        summary = self._analyze_file_direct(file_info, content)
+                        errors_in_row = 0
+                    except RecursionError:
+                        summary = f"[Datei zu komplex fuer Analyse: {file_info.name}]"
+                        errors_in_row += 1
+                        self.state.errors.append(f"RecursionError bei {file_info.name}")
+                        if errors_in_row > 5:
+                            yield WorkflowProgress(
+                                stage="analyze",
+                                message="Zu viele Fehler - ueberspringe Rest",
+                                progress=progress,
+                                is_error=True,
+                            )
+                            # Nicht abbrechen, aber Rest ueberspringen
+                            break
 
                 if summary:
                     file_info.summary = summary
@@ -369,11 +398,16 @@ class DocumentationWorkflow:
                         detail=f"Aktuell: {file_info.name}",
                     )
 
+            # WICHTIG: Nach jedem Batch Garbage Collection
+            # Dies hilft, den Python-Stack zu bereinigen
+            gc.collect()
+
     def _analyze_file_direct(self, file_info: FileInfo, content: str) -> Optional[str]:
         """
         Analysiert eine einzelne Datei DIREKT ohne Generator.
 
         Dies ist die nicht-rekursive Version von _analyze_file.
+        Fuer sehr grosse Dateien wird eine vereinfachte Analyse durchgefuehrt.
         """
         # Cross-File Kontext aus Memory
         cross_file_context = ""
@@ -397,8 +431,51 @@ class DocumentationWorkflow:
 
             return result.response if result.success else None
 
-        # Grosse Dateien: Chunking (iterativ, nicht rekursiv)
+        # SEHR grosse Dateien (>50KB): Vereinfachte Analyse
+        # Nur Anfang, Mitte und Ende analysieren
+        if len(content) > 50000:
+            file_info.chunks_analyzed = 3  # Nur 3 Teile
+
+            # Anfang (erste 2000 Zeichen)
+            start_part = content[:2000]
+            # Mitte
+            mid_start = len(content) // 2 - 1000
+            mid_part = content[mid_start:mid_start + 2000]
+            # Ende (letzte 2000 Zeichen)
+            end_part = content[-2000:]
+
+            context = f"""Sehr grosse Datei {file_info.name} ({len(content)} Zeichen):
+
+ANFANG:
+{start_part}
+
+[... {len(content) - 6000} Zeichen ausgelassen ...]
+
+MITTE:
+{mid_part}
+
+[...]
+
+ENDE:
+{end_part}"""
+
+            result = self.backend.run_completion(
+                context=context,
+                aufgabe=f"Analysiere diese grosse {file_info.extension} Datei anhand von Anfang, Mitte und Ende. Was ist der Zweck?",
+            )
+
+            return result.response if result.success else f"[Grosse Datei: {file_info.name}, {len(content)} Zeichen]"
+
+        # Mittelgrosse Dateien: Chunking (iterativ, nicht rekursiv)
+        # Aber maximal 5 Chunks um Stack-Probleme zu vermeiden
         chunks = self.context_manager.chunk_content(content, self.config.chunking)
+
+        # Limitiere auf maximal 5 Chunks
+        if len(chunks) > 5:
+            # Nimm nur ersten, mittleren und letzten Chunk + 2 dazwischen
+            indices = [0, len(chunks)//4, len(chunks)//2, 3*len(chunks)//4, len(chunks)-1]
+            chunks = [chunks[i] for i in indices if i < len(chunks)]
+
         file_info.chunks_analyzed = len(chunks)
 
         accumulated_summary = ""

@@ -10,7 +10,12 @@ Starten mit:
 import streamlit as st
 import sys
 import time
+import gc
 from pathlib import Path
+
+# WICHTIG: Rekursionslimit fuer grosse Dateimengen erhoehen
+# Das RLM-Framework nutzt intern Rekursion bei vielen Iterationen
+sys.setrecursionlimit(100000)
 
 # Projektpfad hinzufuegen
 sys.path.insert(0, str(Path(__file__).parent.parent))
