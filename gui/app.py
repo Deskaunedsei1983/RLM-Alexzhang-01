@@ -478,14 +478,14 @@ with tab_workflow:
         st.markdown("""
         **RLM-Centric Modus** - Das LLM steuert den gesamten Prozess:
 
-        1. Python sammelt nur Dateipfade
-        2. **EIN** RLM-Aufruf mit allen Pfaden
-        3. LLM nutzt REPL um Dateien zu lesen
-        4. LLM chunked grosse Dateien **SELBST**
-        5. LLM ruft sich **SELBST** rekursiv auf (llm_query)
+        1. Dein Projektverzeichnis wird in Docker gemountet: `/project/`
+        2. **EIN** RLM-Aufruf - LLM liest Dateien selbst via REPL
+        3. LLM chunked grosse Dateien **SELBST**
+        4. LLM ruft sich **SELBST** rekursiv auf (`llm_query()`)
+        5. LLM aggregiert und dokumentiert
 
         ✅ Ideal fuer grosse Projekte (100k+ Dateien)
-        ✅ Kein Python Stack-Overflow
+        ✅ LLM hat Zugriff auf ALLE Dateien
         ✅ Echtes RLM-Paradigma
         """)
     else:
@@ -504,23 +504,39 @@ with tab_workflow:
 
     st.divider()
 
-    # Pfad-Eingabe
+    # Pfad-Eingabe - WICHTIG fuer RLM-Centric
+    if "RLM-Centric" in workflow_mode:
+        st.markdown("""
+        **📂 Projektverzeichnis fuer RLM-Analyse**
+
+        Dieses Verzeichnis wird in den Docker-Container gemountet.
+        Das LLM kann dann ALLE Dateien darin lesen unter `/project/`
+        """)
+
     col_path, col_browse = st.columns([4, 1])
 
     with col_path:
         source_path = st.text_input(
-            "📂 Quellverzeichnis",
-            value="/home/user/RLM-Alexzhang-01",
-            help="Pfad zum zu dokumentierenden Verzeichnis",
+            "📂 Quellverzeichnis (wird in Docker gemountet)" if "RLM-Centric" in workflow_mode else "📂 Quellverzeichnis",
+            value=st.session_state.get("last_source_path", "/home/user"),
+            help="Absoluter Pfad zum Projektverzeichnis. Im RLM-Centric Modus wird dies unter /project/ im Container verfuegbar.",
+            key="source_path_input",
         )
+        # Speichere fuer naechstes Mal
+        st.session_state["last_source_path"] = source_path
 
     with col_browse:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("📁 Pruefen"):
             if Path(source_path).exists():
-                st.success("✓ Pfad existiert")
+                file_count = sum(1 for _ in Path(source_path).rglob("*") if _.is_file())
+                st.success(f"✓ {file_count} Dateien")
             else:
                 st.error("✗ Pfad nicht gefunden")
+
+    # RLM-Centric: Zeige Mount-Info
+    if "RLM-Centric" in workflow_mode and Path(source_path).exists():
+        st.info(f"🐳 Docker-Mount: `{source_path}` → `/project/`")
 
     # Erweiterte Optionen
     with st.expander("⚙️ Erweiterte Optionen"):
