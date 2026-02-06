@@ -56,60 +56,65 @@ class RLMWorkflowResult:
 
 RLM_ANALYSIS_PROMPT = '''Du bist ein Code-Analyse-Experte. Du hast Zugriff auf eine Python REPL.
 
-DEINE AUFGABE: Analysiere das Projekt im Verzeichnis "{source_path}"
+DEINE AUFGABE: Analysiere das Projekt "{project_name}"
 
-DATEIEN IM PROJEKT ({file_count} Dateien):
+WICHTIG: Die Dateien sind bereits fuer dich geladen!
+Die Variable `context` ist ein Dictionary mit:
+- context["files_content"]: Dict mit Dateiname -> Inhalt
+- context["project_path"]: Pfad zum Projekt
+- context["total_files"]: Gesamtzahl der Dateien
+
+PROJEKT-STATISTIK:
+- Gesamtzahl Dateien: {total_files}
+- Geladene Dateien: {loaded_files}
+- Kategorien: {categories}
+
+GELADENE DATEIEN:
 {file_list}
 
-WICHTIG - NUTZE DIE REPL:
-Du MUSST Python-Code in der REPL ausfuehren um:
-1. Dateien zu lesen
-2. Grosse Dateien zu chunken
-3. Dich selbst mit llm_query() rekursiv aufzurufen fuer Teilanalysen
-
-BEISPIEL fuer grosse Dateien:
+BEISPIEL - So greifst du auf Dateien zu:
 ```repl
-# Datei lesen
-with open("/pfad/zur/datei.py", "r") as f:
-    content = f.read()
+# Dateien aus context extrahieren
+files_content = context["files_content"]
+print(f"{{len(files_content)}} Dateien geladen")
+print("Verfuegbare Dateien:", list(files_content.keys())[:10])
 
-# Falls gross, chunken und rekursiv analysieren
-if len(content) > 5000:
-    chunks = [content[i:i+4000] for i in range(0, len(content), 3500)]
-    analyses = []
-    for i, chunk in enumerate(chunks):
-        result = llm_query(f"Analysiere Teil {{i+1}} dieser Python-Datei:\\n{{chunk}}")
-        analyses.append(result)
-    combined = "\\n".join(analyses)
-    final = llm_query(f"Fasse diese Teilanalysen zusammen:\\n{{combined}}")
-    print(final)
-else:
-    result = llm_query(f"Analysiere diese Datei:\\n{{content}}")
-    print(result)
+# Eine Datei lesen
+for name, content in list(files_content.items())[:3]:
+    print(f"\\n=== {{name}} ({{len(content)}} Zeichen) ===")
+    print(content[:500])
 ```
 
-BEISPIEL fuer viele Dateien (batched):
+BEISPIEL - Grosse Dateien mit llm_query analysieren:
 ```repl
-files_to_analyze = {file_paths}
+files_content = context["files_content"]
 
-# Batch-Analyse fuer Effizienz
-prompts = []
-for f in files_to_analyze[:10]:  # In Gruppen verarbeiten
-    with open(f, "r", errors="ignore") as file:
-        content = file.read()[:3000]  # Erste 3000 Zeichen
-    prompts.append(f"Kurze Analyse von {{f}}:\\n{{content}}")
+for filename, content in files_content.items():
+    if len(content) > 5000:
+        # Chunking fuer grosse Dateien
+        chunks = [content[i:i+4000] for i in range(0, len(content), 3500)]
+        print(f"{{filename}}: {{len(chunks)}} Chunks")
 
-results = llm_query_batched(prompts)
-for f, r in zip(files_to_analyze[:10], results):
-    print(f"=== {{f}} ===\\n{{r}}\\n")
+        analyses = []
+        for i, chunk in enumerate(chunks[:3]):  # Max 3 Chunks
+            result = llm_query(f"Analysiere Teil {{i+1}} von {{filename}}:\\n{{chunk}}")
+            analyses.append(result)
+            print(f"Chunk {{i+1}} analysiert")
+
+        # Zusammenfassen
+        if analyses:
+            summary = llm_query(f"Fasse zusammen: {{analyses}}")
+            print(f"Summary fuer {{filename}}: {{summary[:200]}}")
 ```
 
 DEIN ZIEL:
-1. Lies die wichtigsten Dateien (priorisiere: README, main.py, __init__.py, etc.)
-2. Analysiere sie mit llm_query() oder llm_query_batched()
-3. Erstelle eine VOLLSTAENDIGE Projektdokumentation
+1. Extrahiere files_content aus context
+2. Analysiere die wichtigsten Dateien
+3. Nutze llm_query() fuer tiefe Analysen grosser Dateien
+4. Nutze llm_query_batched() fuer parallele Verarbeitung
+5. Erstelle eine VOLLSTAENDIGE Projektdokumentation
 
-AUSGABEFORMAT (am Ende):
+AUSGABEFORMAT (am Ende als FINAL ANSWER):
 ```
 # Projektdokumentation
 
@@ -129,7 +134,7 @@ AUSGABEFORMAT (am Ende):
 [Wie benutzt man das Projekt?]
 ```
 
-Beginne JETZT mit der Analyse. Fuehre Code in der REPL aus!
+Beginne JETZT mit der Analyse. Fuehre REPL Code aus!
 '''
 
 RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei DETAILLIERT:
@@ -252,42 +257,91 @@ class RLMCentricWorkflow:
             detail=f"Uebergebe an RLM zur Analyse",
         )
 
-        # Phase 2: Dateipfade fuer RLM vorbereiten
+        # Phase 2: Dateien laden und fuer RLM vorbereiten
         text_files = [f for f in files if not f.is_binary]
 
         # Sortiere nach Wichtigkeit
         priority_files = self._prioritize_files(text_files)
 
-        # Erstelle Dateiliste fuer RLM
-        file_list = self._format_file_list(priority_files[:200])  # Max 200 fuer Prompt
-        file_paths = [f.path for f in priority_files[:50]]  # Top 50 Pfade
-
         yield RLMWorkflowProgress(
             stage="prepare",
-            message="Bereite RLM-Prompt vor...",
+            message="Lade Dateiinhalte...",
             progress=0.15,
             detail=f"{len(priority_files)} Dateien priorisiert",
         )
+
+        # Lade die wichtigsten Dateien (max 100 oder max 2MB gesamt)
+        files_content = {}
+        total_size = 0
+        max_total_size = 2 * 1024 * 1024  # 2MB max
+        max_files = 100
+
+        for f in priority_files:
+            if len(files_content) >= max_files:
+                break
+            if total_size >= max_total_size:
+                break
+
+            content, success = FileDiscovery.read_file_safe(
+                f.path,
+                max_size=min(50000, max_total_size - total_size),  # Max 50KB pro Datei
+            )
+
+            if success and content:
+                files_content[f.name] = content
+                total_size += len(content)
+
+        yield RLMWorkflowProgress(
+            stage="prepare",
+            message=f"{len(files_content)} Dateien geladen ({total_size // 1024} KB)",
+            progress=0.2,
+        )
+
+        # Erstelle Dateiliste fuer Prompt
+        file_list = "\n".join([
+            f"- {name} ({len(content)} Zeichen)"
+            for name, content in files_content.items()
+        ])
+
+        # Kategorien zaehlen
+        categories = {}
+        for f in files:
+            categories[f.category] = categories.get(f.category, 0) + 1
+        cat_str = ", ".join([f"{k}: {v}" for k, v in categories.items()])
 
         # Phase 3: EINEN RLM-Aufruf - das LLM macht den Rest!
         yield RLMWorkflowProgress(
             stage="analyze",
             message="RLM analysiert Projekt (LLM steuert)...",
-            progress=0.2,
-            detail="Das LLM nutzt REPL und llm_query intern",
+            progress=0.25,
+            detail="Dateien sind im REPL als files_content verfuegbar",
         )
 
         prompt = RLM_ANALYSIS_PROMPT.format(
-            source_path=self.config.source_path,
-            file_count=len(text_files),
+            project_name=Path(self.config.source_path).name,
+            total_files=len(text_files),
+            loaded_files=len(files_content),
+            categories=cat_str,
             file_list=file_list,
-            file_paths=str(file_paths),
         )
 
+        # Kontext mit Dateiinhalten als JSON
+        # Dies wird ins Docker /workspace als context.json geschrieben
+        # und ist als Variable `context` verfuegbar
+        context_with_files = {
+            "files_content": files_content,
+            "project_path": self.config.source_path,
+            "total_files": len(text_files),
+        }
+
+        # Setup-Code um files_content aus context zu extrahieren
+        setup_code = "files_content = context.get('files_content', {})"
+
         # DER EINE GROSSE RLM-AUFRUF
-        # Das LLM iteriert intern ueber Dateien!
-        result = self.backend.run_completion(
-            context=f"Projektpfad: {self.config.source_path}",
+        # Das LLM hat Zugriff auf files_content im REPL
+        result = self.backend.run_completion_with_context(
+            context_payload=context_with_files,
+            setup_code=setup_code,
             aufgabe=prompt,
         )
 

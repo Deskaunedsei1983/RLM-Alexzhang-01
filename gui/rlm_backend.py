@@ -193,6 +193,58 @@ class RLMBackend:
                 error=str(e),
             )
 
+    def run_completion_with_context(
+        self,
+        context_payload: dict | list,
+        aufgabe: str,
+        setup_code: str | None = None,
+    ) -> RLMResult:
+        """
+        Fuehrt eine RLM-Completion mit strukturiertem Kontext aus.
+
+        Der context_payload wird als JSON ins Docker /workspace geschrieben
+        und ist als Variable `context` im REPL verfuegbar.
+
+        Args:
+            context_payload: Dict oder Liste die als context geladen wird
+            aufgabe: Die Aufgabe/Frage (root_prompt)
+            setup_code: Optional - Code der nach Laden des context ausgefuehrt wird
+
+        Returns:
+            RLMResult mit dem Ergebnis
+        """
+        try:
+            self._init_rlm()
+
+            # Setup-Code der files_content aus context extrahiert
+            full_setup = setup_code or ""
+
+            # Context-Payload wird vom RLM automatisch als `context` geladen
+            result = self._rlm.completion(
+                prompt=context_payload,  # Wird als context.json geladen
+                root_prompt=aufgabe,
+            )
+
+            # Log-Datei finden
+            log_file = None
+            if self._logger and hasattr(self._logger, 'current_log_file'):
+                log_file = self._logger.current_log_file
+
+            return RLMResult(
+                success=True,
+                response=result.response,
+                execution_time=result.execution_time,
+                iterations=len(result.iterations) if hasattr(result, 'iterations') else 0,
+                log_file=log_file,
+            )
+
+        except Exception as e:
+            return RLMResult(
+                success=False,
+                response="",
+                error=str(e),
+            )
+
     def get_log_files(self) -> list[Path]:
         """Gibt eine Liste aller Log-Dateien zurueck."""
         log_dir = Path(self.config.log_dir)
