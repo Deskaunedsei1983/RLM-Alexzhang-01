@@ -193,42 +193,91 @@ class RLMBackend:
                 error=str(e),
             )
 
-    def run_completion_with_context(
+    def run_completion_with_source_mount(
         self,
-        context_payload: dict | list,
+        source_path: str,
+        context: str,
         aufgabe: str,
-        setup_code: str | None = None,
+        container_mount_path: str = "/project",
     ) -> RLMResult:
         """
-        Fuehrt eine RLM-Completion mit strukturiertem Kontext aus.
+        Fuehrt eine RLM-Completion mit gemountentem Quellverzeichnis aus.
 
-        Der context_payload wird als JSON ins Docker /workspace geschrieben
-        und ist als Variable `context` im REPL verfuegbar.
+        ECHTES RLM-PARADIGMA:
+        - Das Quellverzeichnis wird in den Docker-Container gemountet
+        - Das LLM kann ALLE Dateien selbst lesen via REPL
+        - Das LLM entscheidet selbst ueber Chunking und Rekursion
 
         Args:
-            context_payload: Dict oder Liste die als context geladen wird
+            source_path: Pfad zum Quellverzeichnis auf dem Host
+            context: Kontext-String (z.B. Dateiliste)
             aufgabe: Die Aufgabe/Frage (root_prompt)
-            setup_code: Optional - Code der nach Laden des context ausgefuehrt wird
+            container_mount_path: Pfad im Container (default: /project)
 
         Returns:
             RLMResult mit dem Ergebnis
         """
         try:
-            self._init_rlm()
+            from rlm import RLM
+            from rlm.logger import RLMLogger
+            from gui.docker_repl_extended import DockerREPLExtended
 
-            # Setup-Code der files_content aus context extrahiert
-            full_setup = setup_code or ""
+            # Logger erstellen
+            os.makedirs(self.config.log_dir, exist_ok=True)
+            logger = RLMLogger(log_dir=self.config.log_dir)
 
-            # Context-Payload wird vom RLM automatisch als `context` geladen
-            result = self._rlm.completion(
-                prompt=context_payload,  # Wird als context.json geladen
-                root_prompt=aufgabe,
-            )
+            # Environment kwargs MIT extra_mounts
+            env_kwargs = {
+                "image": self.config.docker_image,
+                "extra_mounts": [
+                    (source_path, container_mount_path),  # Projektverzeichnis mounten
+                ],
+            }
+
+            # Eigene RLM-Instanz mit erweitertem Docker REPL
+            # Wir muessen den environment_type auf einen custom handler setzen
+            # Da RLM nur built-in environments kennt, erstellen wir RLM manuell
+
+            # Trick: Wir nutzen 'docker' als environment, aber patchen die Klasse
+            import rlm.environments
+            original_get_env = rlm.environments.get_environment
+
+            def patched_get_environment(env_type, kwargs):
+                if env_type == "docker" and "extra_mounts" in kwargs:
+                    return DockerREPLExtended(**kwargs)
+                return original_get_env(env_type, kwargs)
+
+            # Temporaer patchen
+            rlm.environments.get_environment = patched_get_environment
+
+            try:
+                rlm_instance = RLM(
+                    backend="openai",
+                    backend_kwargs={
+                        "base_url": self.config.base_url,
+                        "api_key": self.config.api_key,
+                        "model_name": self.config.model_name,
+                    },
+                    environment="docker",
+                    environment_kwargs=env_kwargs,
+                    max_depth=self.config.max_depth,
+                    max_iterations=self.config.max_iterations,
+                    logger=logger,
+                    verbose=self.config.verbose,
+                )
+
+                result = rlm_instance.completion(
+                    prompt=context,
+                    root_prompt=aufgabe,
+                )
+            finally:
+                # Patch zuruecksetzen
+                rlm.environments.get_environment = original_get_env
 
             # Log-Datei finden
             log_file = None
-            if self._logger and hasattr(self._logger, 'current_log_file'):
-                log_file = self._logger.current_log_file
+            if logger and hasattr(logger, 'current_log_file'):
+                log_file = logger.current_log_file
 
             return RLMResult(
                 success=True,
@@ -239,10 +288,11 @@ class RLMBackend:
             )
 
         except Exception as e:
+            import traceback
             return RLMResult(
                 success=False,
                 response="",
-                error=str(e),
+                error=f"{str(e)}\n{traceback.format_exc()}",
             )
 
     def get_log_files(self) -> list[Path]:
