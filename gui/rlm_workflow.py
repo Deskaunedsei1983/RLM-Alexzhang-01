@@ -205,6 +205,12 @@ class RLMCentricWorkflow:
         self.config = config
         self.memory = memory
         self._stop_requested = False
+        self.result = None
+
+        # Kompatibilitaet mit DocumentationWorkflow GUI
+        # state-Objekt das die GUI erwartet
+        from gui.workflow_engine import WorkflowState
+        self.state = WorkflowState()
 
     def stop(self):
         self._stop_requested = True
@@ -337,6 +343,16 @@ class RLMCentricWorkflow:
             execution_time=execution_time,
             iterations=result.iterations,
         )
+
+        # GUI-Kompatibilitaet: state-Objekt befuellen
+        self.state.files = files
+        self.state.final_documentation = documentation
+        self.state.summaries = {"rlm_analysis": documentation[:500]}
+        # Kategorien aus den Dateien erstellen
+        for f in files:
+            if f.category not in self.state.categories:
+                self.state.categories[f.category] = []
+            self.state.categories[f.category].append(f.path)
 
     def analyze_single_file(self, filepath: str) -> RLMResult:
         """
