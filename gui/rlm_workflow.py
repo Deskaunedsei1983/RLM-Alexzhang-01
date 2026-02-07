@@ -69,6 +69,17 @@ PROJEKT-STATISTIK:
 WICHTIGSTE DATEIEN (Startpunkt):
 {file_list}
 
+=== WICHTIG: SO GIBST DU DEINE FINALE ANTWORT ===
+Am Ende MUSST du FINAL_VAR("variable_name") verwenden!
+Speichere deine Dokumentation in einer Variable und rufe dann FINAL_VAR auf.
+
+Beispiel:
+```repl
+documentation = "# Meine Dokumentation\\n\\n## Inhalt..."
+```
+Dann schreibe ausserhalb des Code-Blocks:
+FINAL_VAR("documentation")
+
 === STRATEGIE FUER VOLLSTAENDIGE ANALYSE ===
 
 SCHRITT 1: Alle Dateien sammeln
@@ -77,22 +88,20 @@ import os
 
 all_files = []
 for root, dirs, files in os.walk("/project"):
-    # Ignoriere unwichtige Verzeichnisse
-    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv", "venv", ".next", "dist", "build"]]
+    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv", "venv", ".next", "dist", "build", ".idea", ".vscode"]]
     for f in files:
-        if f.endswith((".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini")):
+        if f.endswith((".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".html", ".css", ".vue", ".svelte")):
             all_files.append(os.path.join(root, f))
 
 print(f"Zu analysieren: {{len(all_files)}} Dateien")
 ```
 
-SCHRITT 2: Dateien in Batches mit llm_query_batched() analysieren
+SCHRITT 2: Dateien in Batches analysieren
 ```repl
-# Batch-Verarbeitung - 10 Dateien pro Batch
 batch_size = 10
 all_summaries = []
 
-for batch_start in range(0, len(all_files), batch_size):
+for batch_start in range(0, min(len(all_files), 500), batch_size):  # Max 500 Dateien
     batch = all_files[batch_start:batch_start + batch_size]
     prompts = []
 
@@ -100,27 +109,24 @@ for batch_start in range(0, len(all_files), batch_size):
         try:
             with open(filepath, "r", errors="ignore") as f:
                 content = f.read()
-            # Bei grossen Dateien: Anfang + Ende
-            if len(content) > 4000:
-                content = content[:2000] + "\\n...\\n" + content[-1000:]
-            prompts.append(f"Analysiere {{filepath}}:\\n{{content}}")
-        except Exception as e:
-            prompts.append(f"Fehler bei {{filepath}}: {{e}}")
+            if len(content) > 3000:
+                content = content[:1500] + "\\n...\\n" + content[-500:]
+            prompts.append(f"Kurze Beschreibung (1-2 Saetze) von {{filepath}}:\\n{{content[:2000]}}")
+        except:
+            pass
 
-    # Batch-Analyse
-    results = llm_query_batched(prompts)
+    if prompts:
+        results = llm_query_batched(prompts)
+        for fp, result in zip(batch, results):
+            all_summaries.append(f"{{fp}}: {{result[:200]}}")
 
-    for fp, result in zip(batch, results):
-        all_summaries.append(f"{{fp}}: {{result}}")
+    print(f"Fortschritt: {{batch_start + len(batch)}}/{{min(len(all_files), 500)}}")
 
-    print(f"Batch {{batch_start//batch_size + 1}}/{{len(all_files)//batch_size + 1}} fertig")
-
-print(f"Alle {{len(all_summaries)}} Dateien analysiert!")
+print(f"{{len(all_summaries)}} Dateien analysiert")
 ```
 
-SCHRITT 3: Ergebnisse aggregieren
+SCHRITT 3: Nach Verzeichnis gruppieren und Modul-Docs erstellen
 ```repl
-# Gruppiere nach Verzeichnis
 from collections import defaultdict
 by_dir = defaultdict(list)
 
@@ -128,63 +134,53 @@ for summary in all_summaries:
     parts = summary.split(": ", 1)
     if len(parts) == 2:
         path, desc = parts
-        dir_name = os.path.dirname(path).replace("/project/", "") or "root"
-        by_dir[dir_name].append(f"- {{os.path.basename(path)}}: {{desc[:100]}}")
+        dir_name = "/".join(path.replace("/project/", "").split("/")[:-1]) or "root"
+        by_dir[dir_name].append(desc[:150])
 
-# Modul-Zusammenfassungen erstellen
 module_docs = []
-for dir_name, files in sorted(by_dir.items()):
-    files_text = "\\n".join(files[:20])  # Max 20 pro Modul
-    module_summary = llm_query(f"Fasse dieses Modul zusammen:\\nVerzeichnis: {{dir_name}}\\nDateien:\\n{{files_text}}")
-    module_docs.append(f"### {{dir_name}}\\n{{module_summary}}")
-    print(f"Modul {{dir_name}} dokumentiert")
+for dir_name in sorted(by_dir.keys())[:30]:  # Max 30 Module
+    files_desc = by_dir[dir_name][:10]
+    module_text = f"### {{dir_name}}\\n" + "\\n".join([f"- {{d}}" for d in files_desc])
+    module_docs.append(module_text)
+
+print(f"{{len(module_docs)}} Module dokumentiert")
 ```
 
-SCHRITT 4: Finale Dokumentation
+SCHRITT 4: Finale Dokumentation erstellen und in Variable speichern
 ```repl
-# Gesamtdokumentation erstellen
-all_modules = "\\n\\n".join(module_docs)
-final_doc = llm_query(f"""Erstelle eine vollstaendige Projektdokumentation basierend auf diesen Modul-Analysen:
+modules_text = "\\n\\n".join(module_docs)
 
-{{all_modules}}
+final_prompt = f"""Erstelle eine Projektdokumentation fuer {project_name}:
 
-Format:
-# Projektdokumentation: {project_name}
+Module:
+{{modules_text}}
 
-## Uebersicht
-[Gesamtbeschreibung]
+Erstelle eine strukturierte Dokumentation mit:
+- Uebersicht (was macht das Projekt)
+- Architektur (Hauptkomponenten)
+- Module (kurze Beschreibung jedes Moduls)
+- Verwendung (wie startet man das Projekt)
+"""
 
-## Architektur
-[Wie haengen die Module zusammen?]
-
-## Module
-[Jedes Modul mit Beschreibung]
-
-## Hauptfunktionen
-[Die wichtigsten Features]
-
-## Verwendung
-[Wie benutzt man das Projekt?]
-""")
-
-print("=== FINALE DOKUMENTATION ===")
-print(final_doc)
+documentation = llm_query(final_prompt)
+print("Dokumentation erstellt!")
+print(documentation[:500])
 ```
 
-WICHTIG:
-- Nutze llm_query_batched() fuer parallele Verarbeitung (schneller!)
-- Gehe ALLE Dateien durch, nicht nur eine Auswahl
-- Aggregiere die Ergebnisse am Ende
-- Erstelle eine VOLLSTAENDIGE Dokumentation
+SCHRITT 5: FINALE ANTWORT GEBEN
+Nachdem du die documentation Variable erstellt hast, schreibe:
+FINAL_VAR("documentation")
 
 Beginne JETZT mit Schritt 1!
 '''
 
-RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei VOLLSTAENDIG:
+RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei:
 
 DATEI: {filepath}
 GROESSE: {size} Bytes
 Gemountet unter: /project/{relative_path}
+
+WICHTIG: Speichere das Ergebnis in der Variable "analysis" und beende mit FINAL_VAR("analysis")
 
 ```repl
 filepath = "/project/{relative_path}"
@@ -193,34 +189,19 @@ with open(filepath, "r", errors="ignore") as f:
 
 print(f"Dateigroesse: {{len(content)}} Zeichen")
 
-# Bei sehr grossen Dateien: Chunking mit rekursiver Analyse
-if len(content) > 8000:
-    chunk_size = 6000
-    overlap = 500
-    chunks = []
-    for i in range(0, len(content), chunk_size - overlap):
-        chunks.append(content[i:i+chunk_size])
-
-    print(f"Teile in {{len(chunks)}} Chunks")
-
-    chunk_analyses = []
-    for i, chunk in enumerate(chunks):
-        analysis = llm_query(f"Analysiere Teil {{i+1}}/{{len(chunks)}} von {filepath}:\\n{{chunk}}")
-        chunk_analyses.append(analysis)
-        print(f"Chunk {{i+1}} analysiert")
-
-    # Zusammenfuehren
-    combined = "\\n---\\n".join(chunk_analyses)
-    final = llm_query(f"Fasse diese {{len(chunks)}} Teilanalysen zusammen:\\n{{combined}}")
-    print("=== ZUSAMMENFASSUNG ===")
-    print(final)
+if len(content) > 6000:
+    # Grosse Datei: Nur Anfang und Ende analysieren
+    content_short = content[:3000] + "\\n...\\n" + content[-1500:]
+    analysis = llm_query(f"Analysiere diese Datei (gekuerzt):\\n{{content_short}}")
 else:
-    # Direkte Analyse
-    result = llm_query(f"Analysiere detailliert:\\n{{content}}")
-    print(result)
+    analysis = llm_query(f"Analysiere diese Datei:\\n{{content}}")
+
+print("Analyse erstellt")
+print(analysis[:300])
 ```
 
-Fuehre den Code aus und erstelle eine vollstaendige Analyse.
+Jetzt gib die finale Antwort:
+FINAL_VAR("analysis")
 '''
 
 
