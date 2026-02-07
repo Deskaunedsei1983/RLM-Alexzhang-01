@@ -120,10 +120,10 @@ with st.sidebar:
     )
     max_iterations = st.slider(
         "Max Iterationen",
-        min_value=5,
-        max_value=30,
-        value=st.session_state.config.max_iterations,
-        help="Maximale Anzahl der REPL-Iterationen"
+        min_value=10,
+        max_value=500,
+        value=min(st.session_state.config.max_iterations, 500),
+        help="Maximale Anzahl der REPL-Iterationen (hoch setzen fuer grosse Projekte!)"
     )
 
     st.divider()

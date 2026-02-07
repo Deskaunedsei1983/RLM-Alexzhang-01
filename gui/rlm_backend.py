@@ -21,8 +21,8 @@ class RLMConfig:
     base_url: str = "http://0.0.0.0:5567/v1"
     api_key: str = "dummy"
     model_name: str = "GLM-4.7-Flash-REAP-23B-A3B-UD-Q2_K_XL.gguf"
-    max_iterations: int = 15
-    max_depth: int = 1
+    max_iterations: int = 200  # Erhoeht fuer grosse Projekte mit vielen Dateien
+    max_depth: int = 2  # Erlaube tiefere Rekursion
     environment: str = "docker"
     docker_image: str = "python:3.11-slim"
     log_dir: str = "./logs"
