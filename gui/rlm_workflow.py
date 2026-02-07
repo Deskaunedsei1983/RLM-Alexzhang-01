@@ -66,167 +66,119 @@ PROJEKT-STATISTIK:
 - Gesamtzahl Dateien: {total_files}
 - Kategorien: {categories}
 
-DATEILISTE (erste 500):
+WICHTIGSTE DATEIEN (Top 50):
 {file_list}
 
-BEISPIEL - So liest du Dateien:
+=== KRITISCHE REGELN ZUR KONTEXTGROESSE ===
+1. Sende NIEMALS mehr als 3000 Zeichen an llm_query()!
+2. Bei grossen Dateien: Lies nur die ersten 2000 Zeichen
+3. Fasse Ergebnisse KURZ zusammen (max 500 Zeichen)
+4. Analysiere max 10-20 wichtige Dateien, nicht alle!
+
+BEISPIEL - Dateien auflisten (im Container):
 ```repl
 import os
-
-# Alle Dateien im Projekt auflisten
-for root, dirs, files in os.walk("/project"):
-    # Ignoriere typische Verzeichnisse
-    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv", "venv"]]
-    for f in files[:10]:  # Erste 10 pro Verzeichnis
-        filepath = os.path.join(root, f)
-        print(filepath)
+files = []
+for root, dirs, files_list in os.walk("/project"):
+    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv"]]
+    for f in files_list[:5]:
+        files.append(os.path.join(root, f))
+print(f"Gefunden: {{len(files)}} Dateien")
+print(files[:20])
 ```
 
-BEISPIEL - Datei lesen:
+BEISPIEL - Datei lesen (MIT LIMIT!):
 ```repl
-# Eine Datei lesen
 with open("/project/README.md", "r", errors="ignore") as f:
-    content = f.read()
-print(f"README hat {{len(content)}} Zeichen")
-print(content[:1000])
+    content = f.read()[:2000]  # MAX 2000 Zeichen!
+print(f"Inhalt ({{len(content)}} Zeichen):")
+print(content)
 ```
 
-BEISPIEL - Grosse Dateien mit llm_query analysieren:
+BEISPIEL - Rekursive Analyse (KURZ halten!):
 ```repl
-# Grosse Datei chunken und rekursiv analysieren
+# WICHTIG: Nur kurze Zusammenfassungen senden!
 filepath = "/project/src/main.py"
 with open(filepath, "r", errors="ignore") as f:
-    content = f.read()
+    content = f.read()[:2000]
 
-if len(content) > 5000:
-    # Chunking fuer grosse Dateien
-    chunks = [content[i:i+4000] for i in range(0, len(content), 3500)]
-    print(f"{{filepath}}: {{len(chunks)}} Chunks")
-
-    analyses = []
-    for i, chunk in enumerate(chunks[:5]):  # Max 5 Chunks
-        result = llm_query(f"Analysiere Teil {{i+1}} von {{filepath}}:\\n{{chunk}}")
-        analyses.append(result)
-        print(f"Chunk {{i+1}} analysiert")
-
-    # Zusammenfassen
-    if analyses:
-        summary = llm_query(f"Fasse diese Analysen zusammen: {{analyses}}")
-        print(f"Summary: {{summary[:500]}}")
-else:
-    # Kleine Datei direkt analysieren
-    result = llm_query(f"Analysiere diese Datei {{filepath}}:\\n{{content}}")
-    print(result)
+# Kurze Analyse anfordern
+result = llm_query(f"Kurze Zusammenfassung (max 200 Woerter) von {{filepath}}:\\n{{content}}")
+print(f"Analyse: {{result[:500]}}")  # Nur ersten 500 Zeichen ausgeben
 ```
 
-BEISPIEL - Batch-Analyse mehrerer Dateien:
+BEISPIEL - Mehrere Dateien effizient:
 ```repl
 import os
+summaries = []
 
-# Sammle wichtige Dateien
-important_files = []
+# Nur die 10 wichtigsten Dateien
+important = ["README.md", "main.py", "app.py", "index.js", "package.json"]
 for root, dirs, files in os.walk("/project"):
     dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git"]]
     for f in files:
-        if f.endswith((".py", ".js", ".ts", ".md")):
-            important_files.append(os.path.join(root, f))
+        if any(imp in f for imp in important):
+            path = os.path.join(root, f)
+            with open(path, "r", errors="ignore") as file:
+                content = file.read()[:1500]
+            # Kurze Zusammenfassung
+            summary = llm_query(f"1 Satz Zusammenfassung von {{f}}: {{content}}")
+            summaries.append(f"{{f}}: {{summary[:100]}}")
+            if len(summaries) >= 10:
+                break
+    if len(summaries) >= 10:
+        break
 
-# Lese und analysiere in Batches
-prompts = []
-for fp in important_files[:10]:
-    try:
-        with open(fp, "r", errors="ignore") as f:
-            content = f.read()[:3000]  # Erste 3000 Zeichen
-        prompts.append(f"Kurze Analyse von {{fp}}:\\n{{content}}")
-    except:
-        pass
-
-if prompts:
-    results = llm_query_batched(prompts)
-    for fp, result in zip(important_files[:10], results):
-        print(f"=== {{fp}} ===")
-        print(result[:300])
-        print()
+for s in summaries:
+    print(s)
 ```
 
 DEIN ZIEL:
-1. Lies die wichtigsten Dateien direkt aus /project
-2. Analysiere README, main files, config files zuerst
-3. Nutze llm_query() fuer tiefe Analysen grosser Dateien
-4. Nutze llm_query_batched() fuer parallele Verarbeitung vieler Dateien
-5. Erstelle eine VOLLSTAENDIGE Projektdokumentation
+1. Lies README und Hauptdateien (max 10-15 Dateien)
+2. Halte alle llm_query() Aufrufe KURZ (< 3000 Zeichen)
+3. Erstelle eine KOMPAKTE Projektdokumentation
 
-AUSGABEFORMAT (am Ende als FINAL ANSWER):
+AUSGABEFORMAT (FINAL ANSWER):
 ```
-# Projektdokumentation
+# Projektdokumentation: {project_name}
 
 ## Uebersicht
-[Was macht das Projekt?]
+[2-3 Saetze]
 
 ## Struktur
-[Hauptverzeichnisse und deren Zweck]
+[Hauptverzeichnisse]
 
 ## Kernkomponenten
-[Die wichtigsten Module/Dateien]
-
-## Abhaengigkeiten
-[Externe Bibliotheken]
+[Wichtigste 5-10 Dateien]
 
 ## Verwendung
-[Wie benutzt man das Projekt?]
+[Wie startet man das Projekt?]
 ```
 
-Beginne JETZT mit der Analyse. Fuehre REPL Code aus um Dateien zu lesen!
+Beginne JETZT. Halte den Kontext KLEIN!
 '''
 
-RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei DETAILLIERT:
+RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei:
 
 DATEI: {filepath}
 GROESSE: {size} Bytes
+Gemountet unter: /project/{relative_path}
 
-Die Datei ist gemountet unter: /project/{relative_path}
-
-ANWEISUNGEN:
-1. Lies die Datei mit Python in der REPL
-2. Falls > 10000 Zeichen: Teile in Chunks und analysiere jeden mit llm_query()
-3. Falls <= 10000 Zeichen: Analysiere direkt
+WICHTIG: Halte alle llm_query() Aufrufe unter 2000 Zeichen!
 
 ```repl
 filepath = "/project/{relative_path}"
 with open(filepath, "r", errors="ignore") as f:
-    content = f.read()
+    content = f.read()[:3000]  # Max 3000 Zeichen lesen!
 
-print(f"Dateigroesse: {{len(content)}} Zeichen")
+print(f"Gelesen: {{len(content)}} Zeichen")
 
-if len(content) > 10000:
-    # Chunking
-    chunk_size = 8000
-    overlap = 500
-    chunks = []
-    for i in range(0, len(content), chunk_size - overlap):
-        chunks.append(content[i:i+chunk_size])
-
-    print(f"Teile in {{len(chunks)}} Chunks auf")
-
-    analyses = []
-    for i, chunk in enumerate(chunks):
-        prompt = f"Analysiere Teil {{i+1}}/{{len(chunks)}} der Datei {filepath}:\\n{{chunk}}"
-        result = llm_query(prompt)
-        analyses.append(f"Teil {{i+1}}:\\n{{result}}")
-        print(f"Chunk {{i+1}} analysiert")
-
-    # Zusammenfuehren
-    combined = "\\n\\n".join(analyses)
-    final = llm_query(f"Fasse diese {{len(chunks)}} Teilanalysen zu einer Gesamtanalyse zusammen:\\n{{combined}}")
-    print("=== FINALE ANALYSE ===")
-    print(final)
-else:
-    # Direkte Analyse
-    result = llm_query(f"Analysiere diese Datei detailliert:\\n{{content}}")
-    print(result)
+# Kurze Analyse anfordern
+result = llm_query(f"Kurze Analyse (max 200 Woerter) von {filepath}:\\n{{content}}")
+print(result[:500])
 ```
 
-Fuehre den Code aus und gib die Analyse zurueck.
+Gib eine kurze Zusammenfassung zurueck.
 '''
 
 
@@ -312,14 +264,18 @@ class RLMCentricWorkflow:
             categories[f.category] = categories.get(f.category, 0) + 1
         cat_str = ", ".join([f"{k}: {v}" for k, v in categories.items()])
 
-        # Dateiliste erstellen (relative Pfade)
+        # Dateiliste erstellen - NUR die 50 wichtigsten Dateien!
+        # Priorisiere wichtige Dateien
+        priority_files = self._prioritize_files(text_files)[:50]
+
         file_list_lines = []
-        for f in text_files[:500]:  # Erste 500 fuer Prompt
+        for f in priority_files:
             try:
                 rel_path = str(Path(f.path).relative_to(self.config.source_path))
             except ValueError:
                 rel_path = f.name
-            file_list_lines.append(f"- /project/{rel_path} ({f.size} bytes)")
+            # Kurze Zeilen - nur Name und Groesse
+            file_list_lines.append(f"- {rel_path}")
 
         file_list = "\n".join(file_list_lines)
 
