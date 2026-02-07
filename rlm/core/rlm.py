@@ -326,10 +326,11 @@ class RLM:
         Default behavior if the RLM runs out of iterations and does not find a final answer.
         It will take the message history, and try to generate a final answer from it.
         """
+        # Use "user" role instead of "assistant" to avoid prefill conflict with enable_thinking
         current_prompt = message_history + [
             {
-                "role": "assistant",
-                "content": "Please provide a final answer to the user's question based on the information provided.",
+                "role": "user",
+                "content": "Please provide a final answer to the user's question based on the information provided. Give your FINAL ANSWER now.",
             }
         ]
         response = lm_handler.completion(current_prompt)

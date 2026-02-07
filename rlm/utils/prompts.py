@@ -106,9 +106,12 @@ def build_rlm_system_prompt(
 
     metadata_prompt = f"Your context is a {context_type} with {context_total_length} total characters, and is broken up into chunks of char lengths: {context_lengths}."
 
+    # Combine system prompt with metadata to avoid assistant prefill issues
+    # Some LLM servers with enable_thinking don't support assistant prefills
+    combined_system = f"{system_prompt}\n\n[CONTEXT INFO]: {metadata_prompt}"
+
     return [
-        {"role": "system", "content": system_prompt},
-        {"role": "assistant", "content": metadata_prompt},
+        {"role": "system", "content": combined_system},
     ]
 
 
