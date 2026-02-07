@@ -108,11 +108,16 @@ class DockerREPLExtended(DockerREPL):
         ]
 
         # Fuege extra mounts hinzu
+        print(f"[DockerREPLExtended] Extra mounts to add: {self.extra_mounts}")
         for host_path, container_path in self.extra_mounts:
             # Stelle sicher dass Host-Pfad existiert
             if os.path.exists(host_path):
                 # Read-only mount fuer Sicherheit
-                docker_cmd.extend(["-v", f"{host_path}:{container_path}:ro"])
+                mount_arg = f"{host_path}:{container_path}:ro"
+                docker_cmd.extend(["-v", mount_arg])
+                print(f"[DockerREPLExtended] Added mount: {mount_arg}")
+            else:
+                print(f"[DockerREPLExtended] WARNING: Path does not exist: {host_path}")
 
         docker_cmd.extend([
             "--add-host",
@@ -123,18 +128,31 @@ class DockerREPLExtended(DockerREPL):
             "/dev/null",
         ])
 
+        print(f"[DockerREPLExtended] Docker command: {' '.join(docker_cmd)}")
         result = subprocess.run(docker_cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
             raise RuntimeError(f"Failed to start container: {result.stderr}")
 
         self.container_id = result.stdout.strip()
+        print(f"[DockerREPLExtended] Container started: {self.container_id[:12]}")
 
         # Install dependencies
         subprocess.run(
             ["docker", "exec", self.container_id, "pip", "install", "-q", "dill", "requests"],
             capture_output=True,
         )
+
+        # Verify mount exists in container
+        verify_result = subprocess.run(
+            ["docker", "exec", self.container_id, "ls", "-la", "/project"],
+            capture_output=True,
+            text=True,
+        )
+        if verify_result.returncode == 0:
+            print(f"[DockerREPLExtended] /project mount verified!")
+        else:
+            print(f"[DockerREPLExtended] WARNING: /project NOT found in container!")
 
 
 def get_extended_docker_environment(env_kwargs: dict):

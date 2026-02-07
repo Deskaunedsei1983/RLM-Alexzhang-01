@@ -238,17 +238,20 @@ class RLMBackend:
             # Wir muessen den environment_type auf einen custom handler setzen
             # Da RLM nur built-in environments kennt, erstellen wir RLM manuell
 
-            # Trick: Wir nutzen 'docker' als environment, aber patchen die Klasse
-            import rlm.environments
-            original_get_env = rlm.environments.get_environment
+            # WICHTIG: Wir muessen rlm.core.rlm.get_environment patchen,
+            # nicht rlm.environments.get_environment!
+            # Der Import in rlm.core.rlm ist: from rlm.environments import get_environment
+            # Das bedeutet die Funktion ist direkt in rlm.core.rlm gespeichert
+            import rlm.core.rlm as rlm_module
+            original_get_env = rlm_module.get_environment
 
             def patched_get_environment(env_type, kwargs):
                 if env_type == "docker" and "extra_mounts" in kwargs:
                     return DockerREPLExtended(**kwargs)
                 return original_get_env(env_type, kwargs)
 
-            # Temporaer patchen
-            rlm.environments.get_environment = patched_get_environment
+            # Temporaer patchen - an der richtigen Stelle!
+            rlm_module.get_environment = patched_get_environment
 
             try:
                 rlm_instance = RLM(
@@ -272,7 +275,7 @@ class RLMBackend:
                 )
             finally:
                 # Patch zuruecksetzen
-                rlm.environments.get_environment = original_get_env
+                rlm_module.get_environment = original_get_env
 
             # Log-Datei finden
             log_file = None
