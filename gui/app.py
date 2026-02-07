@@ -278,15 +278,8 @@ with tab_main:
 
         default_task = "Analysiere die hochgeladenen Dateien und beschreibe deren Inhalt und Zweck."
 
-    # Smart Processing Flag speichern
-    if 'use_smart_processing' not in dir():
-        use_smart_processing = False
-
-    # uploaded_files Variable sicherstellen
-    if 'uploaded_files' not in dir():
-        uploaded_files = None
-
-    else:  # Text eingeben
+    elif context_source == "✏️ Text eingeben":
+        # Text manuell eingeben
         context = st.text_area(
             "Kontext eingeben",
             value="",
@@ -294,6 +287,16 @@ with tab_main:
             placeholder="Gib hier deinen Kontext ein (Daten, Code, Text...)",
             label_visibility="collapsed",
         )
+        default_task = ""
+        use_smart_processing = False
+        uploaded_files = None
+
+    # Fallback fuer Variablen
+    if 'use_smart_processing' not in dir():
+        use_smart_processing = False
+    if 'uploaded_files' not in dir():
+        uploaded_files = None
+    if 'default_task' not in dir():
         default_task = ""
 
     st.divider()
