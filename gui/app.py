@@ -237,7 +237,9 @@ with tab_main:
 
             for uploaded_file in uploaded_files:
                 try:
-                    content = uploaded_file.read().decode('utf-8', errors='ignore')
+                    # WICHTIG: getvalue() statt read() verwenden!
+                    # read() funktioniert nur beim ersten Aufruf, getvalue() immer
+                    content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
                     file_size = len(content)
                     total_size += file_size
 
