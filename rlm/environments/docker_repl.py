@@ -47,10 +47,18 @@ class LLMProxyHandler(BaseHTTPRequestHandler):
         self._respond(200, result)
 
     def _respond(self, status: int, data: dict):
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+        except BrokenPipeError:
+            # Client closed connection before response could be sent
+            # This can happen with long-running LLM queries
+            pass
+        except Exception:
+            # Ignore other write errors
+            pass
 
     def _handle_single(self, body: dict) -> dict:
         if not self.lm_handler_address:
@@ -105,7 +113,7 @@ STATE = "/workspace/state.dill"
 
 def llm_query(prompt, model=None):
     try:
-        r = requests.post(f"{{PROXY}}/llm_query", json={{"prompt": prompt, "model": model, "depth": {depth}}}, timeout=300)
+        r = requests.post(f"{{PROXY}}/llm_query", json={{"prompt": prompt, "model": model, "depth": {depth}}}, timeout=1800)
         d = r.json()
         return d.get("response") or f"Error: {{d.get('error')}}"
     except Exception as e:
@@ -113,7 +121,7 @@ def llm_query(prompt, model=None):
 
 def llm_query_batched(prompts, model=None):
     try:
-        r = requests.post(f"{{PROXY}}/llm_query_batched", json={{"prompts": prompts, "model": model, "depth": {depth}}}, timeout=300)
+        r = requests.post(f"{{PROXY}}/llm_query_batched", json={{"prompts": prompts, "model": model, "depth": {depth}}}, timeout=1800)
         d = r.json()
         return d.get("responses") or [f"Error: {{d.get('error')}}"] * len(prompts)
     except Exception as e:
