@@ -55,88 +55,55 @@ class RLMWorkflowResult:
 # RLM Prompts - Das LLM steuert den Prozess
 # =============================================================================
 
-RLM_ANALYSIS_PROMPT = '''Du bist ein Code-Analyse-Experte. Du hast Zugriff auf eine Python REPL.
+RLM_ANALYSIS_PROMPT = '''Du bist ein Code-Analyse-Experte mit Python REPL Zugriff.
 
-DEINE AUFGABE: Analysiere das Projekt "{project_name}" mit {total_files} Dateien.
+AUFGABE: Analysiere Projekt "{project_name}" ({total_files} Dateien, gemountet unter /project).
 
-Das Projektverzeichnis ist gemountet unter: /project
+Kategorien: {categories}
 
-PROJEKT-STATISTIK:
-- Gesamtzahl Dateien: {total_files}
-- Kategorien: {categories}
-
-WICHTIGSTE DATEIEN:
-{file_list}
-
-=== DEINE ANALYSE-STRATEGIE ===
-
-Fuehre diese Schritte aus:
-
-SCHRITT 1 - Dateien erkunden:
+SCHRITT 1 - Dateien finden:
 ```repl
 import os
 files = []
 for root, dirs, fs in os.walk("/project"):
-    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv"]]
+    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv", "dist", "build"]]
     for f in fs:
-        if f.endswith((".py", ".js", ".ts", ".md", ".json")):
+        if f.endswith((".py", ".js", ".ts", ".md", ".json", ".yaml")):
             files.append(os.path.join(root, f))
-print(f"Gefunden: {{len(files)}} relevante Dateien")
-print("Erste 20:", files[:20])
+print(f"{{len(files)}} Dateien gefunden")
 ```
 
-SCHRITT 2 - Wichtige Dateien lesen und analysieren:
+SCHRITT 2 - Wichtige Dateien analysieren:
 ```repl
-# Lies und analysiere die wichtigsten Dateien
-wichtig = ["README", "main", "app", "index", "setup", "config"]
+wichtig = ["README", "main", "app", "index", "setup", "config", "package.json"]
 summaries = []
-
-for filepath in files[:50]:
-    name = os.path.basename(filepath).lower()
-    if any(w in name for w in wichtig) or filepath in files[:10]:
+for fp in files[:30]:
+    name = os.path.basename(fp).lower()
+    if any(w in name for w in wichtig) or fp in files[:5]:
         try:
-            with open(filepath, "r", errors="ignore") as f:
-                content = f.read()[:2000]
-            # Kurze Analyse
-            desc = llm_query(f"Beschreibe in 1-2 Saetzen was diese Datei macht:\\n{{content}}")
-            summaries.append(f"{{filepath}}: {{desc[:150]}}")
-            print(f"Analysiert: {{filepath}}")
-        except Exception as e:
-            print(f"Fehler: {{e}}")
-
-print(f"\\n{{len(summaries)}} Dateien analysiert")
+            content = open(fp, "r", errors="ignore").read()[:1500]
+            desc = llm_query(f"1 Satz: Was macht diese Datei?\\n{{content[:1000]}}")
+            summaries.append(f"{{fp}}: {{desc[:100]}}")
+        except: pass
+print(f"{{len(summaries)}} analysiert")
 ```
 
 SCHRITT 3 - Dokumentation erstellen:
 ```repl
-# Erstelle die finale Dokumentation
-summary_text = "\\n".join(summaries[:30])
-
-doc_prompt = f"""Erstelle eine Projektdokumentation basierend auf diesen Datei-Analysen:
-
-{{summary_text}}
+final_doc = llm_query(f"""Erstelle Projektdokumentation:
+{{chr(10).join(summaries)}}
 
 Format:
-# {project_name} - Projektdokumentation
-
+# {project_name}
 ## Uebersicht
-[Was macht das Projekt?]
-
 ## Hauptkomponenten
-[Wichtigste Dateien/Module]
-
-## Verwendung
-[Wie nutzt man das Projekt?]
-"""
-
-final_doc = llm_query(doc_prompt)
+## Verwendung""")
 print("===DOKUMENTATION_START===")
 print(final_doc)
 print("===DOKUMENTATION_ENDE===")
 ```
 
-Nachdem du Schritt 3 ausgefuehrt hast, schreibe diese Zeile alleine:
-FINAL_VAR("final_doc")
+Nach Schritt 3: FINAL_VAR("final_doc")
 '''
 
 RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei:
@@ -246,25 +213,13 @@ class RLMCentricWorkflow:
         # Phase 2: Statistik vorbereiten
         text_files = [f for f in files if not f.is_binary]
 
-        # Kategorien zaehlen
+        # Kategorien zaehlen (kurz halten)
         categories = {}
         for f in files:
             categories[f.category] = categories.get(f.category, 0) + 1
-        cat_str = ", ".join([f"{k}: {v}" for k, v in categories.items()])
-
-        # Dateiliste erstellen - Top 100 priorisierte Dateien als Startpunkt
-        # Das LLM findet den Rest selbst via os.walk()
-        priority_files = self._prioritize_files(text_files)[:100]
-
-        file_list_lines = []
-        for f in priority_files:
-            try:
-                rel_path = str(Path(f.path).relative_to(self.config.source_path))
-            except ValueError:
-                rel_path = f.name
-            file_list_lines.append(f"- /project/{rel_path}")
-
-        file_list = "\n".join(file_list_lines)
+        # Nur Top 5 Kategorien
+        top_cats = sorted(categories.items(), key=lambda x: x[1], reverse=True)[:5]
+        cat_str = ", ".join([f"{k}: {v}" for k, v in top_cats])
 
         yield RLMWorkflowProgress(
             stage="prepare",
@@ -285,15 +240,10 @@ class RLMCentricWorkflow:
             project_name=Path(self.config.source_path).name,
             total_files=len(text_files),
             categories=cat_str,
-            file_list=file_list,
         )
 
-        # Kontext-String mit Dateiliste
-        context = f"""Projektanalyse fuer: {self.config.source_path}
-Dateien: {len(text_files)}
-Kategorien: {cat_str}
-
-Das Projekt ist gemountet unter /project - lies Dateien direkt!"""
+        # Kurzer Kontext
+        context = f"Projekt: {Path(self.config.source_path).name}, {len(text_files)} Dateien, gemountet unter /project"
 
         # DER EINE GROSSE RLM-AUFRUF MIT GEMOUNTENTEM VERZEICHNIS
         # Das LLM hat Zugriff auf /project im Container
