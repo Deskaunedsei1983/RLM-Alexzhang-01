@@ -57,53 +57,126 @@ class RLMWorkflowResult:
 
 RLM_ANALYSIS_PROMPT = '''Du bist ein Code-Analyse-Experte mit Python REPL Zugriff.
 
-AUFGABE: Analysiere Projekt "{project_name}" ({total_files} Dateien, gemountet unter /project).
+AUFGABE: Analysiere das GESAMTE Projekt "{project_name}" mit {total_files} Dateien.
+Das Projekt ist gemountet unter: /project
 
 Kategorien: {categories}
 
-SCHRITT 1 - Dateien finden:
+=== WICHTIG: NUTZE llm_query_batched() FUER EFFIZIENZ ===
+
+Du hast Zugriff auf:
+- llm_query(prompt) - einzelne LLM-Anfrage
+- llm_query_batched(prompts_list) - VIELE Anfragen parallel (NUTZE DAS!)
+
+SCHRITT 1 - Alle Dateien sammeln:
 ```repl
 import os
-files = []
+all_files = []
 for root, dirs, fs in os.walk("/project"):
-    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv", "dist", "build"]]
+    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv", "dist", "build", ".next"]]
     for f in fs:
-        if f.endswith((".py", ".js", ".ts", ".md", ".json", ".yaml")):
-            files.append(os.path.join(root, f))
-print(f"{{len(files)}} Dateien gefunden")
+        if f.endswith((".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".yaml", ".yml", ".vue", ".svelte", ".go", ".rs", ".java")):
+            all_files.append(os.path.join(root, f))
+print(f"Gefunden: {{len(all_files)}} Dateien")
 ```
 
-SCHRITT 2 - Wichtige Dateien analysieren:
+SCHRITT 2 - Dateien in GROSSEN Batches analysieren (WICHTIG: ALLE verarbeiten!):
 ```repl
-wichtig = ["README", "main", "app", "index", "setup", "config", "package.json"]
-summaries = []
-for fp in files[:30]:
-    name = os.path.basename(fp).lower()
-    if any(w in name for w in wichtig) or fp in files[:5]:
+# Verarbeite ALLE Dateien in Batches von 20
+batch_size = 20
+all_summaries = []
+
+for batch_start in range(0, len(all_files), batch_size):
+    batch = all_files[batch_start:batch_start + batch_size]
+    prompts = []
+
+    for filepath in batch:
         try:
-            content = open(fp, "r", errors="ignore").read()[:1500]
-            desc = llm_query(f"1 Satz: Was macht diese Datei?\\n{{content[:1000]}}")
-            summaries.append(f"{{fp}}: {{desc[:100]}}")
-        except: pass
-print(f"{{len(summaries)}} analysiert")
+            with open(filepath, "r", errors="ignore") as f:
+                content = f.read()
+            # Kuerze sehr lange Dateien
+            if len(content) > 4000:
+                content = content[:2000] + "\\n[...]\\n" + content[-1000:]
+            prompts.append(f"Beschreibe in 1 Satz was {{filepath}} macht:\\n{{content[:3000]}}")
+        except:
+            pass
+
+    if prompts:
+        # BATCH-VERARBEITUNG: Alle 20 Dateien parallel analysieren!
+        results = llm_query_batched(prompts)
+        for fp, result in zip(batch, results):
+            all_summaries.append(f"{{fp}}: {{str(result)[:150]}}")
+
+    print(f"Fortschritt: {{min(batch_start + batch_size, len(all_files))}}/{{len(all_files)}}")
+
+print(f"\\nGesamt: {{len(all_summaries)}} Dateien analysiert")
 ```
 
-SCHRITT 3 - Dokumentation erstellen:
+SCHRITT 3 - Nach Verzeichnis gruppieren:
 ```repl
-final_doc = llm_query(f"""Erstelle Projektdokumentation:
-{{chr(10).join(summaries)}}
+from collections import defaultdict
+by_module = defaultdict(list)
 
-Format:
-# {project_name}
+for summary in all_summaries:
+    parts = summary.split(": ", 1)
+    if len(parts) == 2:
+        path, desc = parts
+        # Extrahiere Modul/Verzeichnis
+        rel_path = path.replace("/project/", "")
+        module = rel_path.split("/")[0] if "/" in rel_path else "root"
+        by_module[module].append(desc[:100])
+
+print(f"{{len(by_module)}} Module gefunden:")
+for mod in sorted(by_module.keys())[:20]:
+    print(f"  {{mod}}: {{len(by_module[mod])}} Dateien")
+```
+
+SCHRITT 4 - Umfangreiche Dokumentation erstellen:
+```repl
+# Erstelle Modul-Dokumentation
+module_docs = []
+for module in sorted(by_module.keys()):
+    files_in_module = by_module[module]
+    module_summary = llm_query(f"Fasse diese {{len(files_in_module)}} Dateibeschreibungen des Moduls '{{module}}' in 2-3 Saetzen zusammen:\\n" + "\\n".join(files_in_module[:30]))
+    module_docs.append(f"### {{module}}\\n{{module_summary}}")
+
+modules_text = "\\n\\n".join(module_docs)
+print(f"{{len(module_docs)}} Module dokumentiert")
+```
+
+SCHRITT 5 - Finale Dokumentation zusammenstellen:
+```repl
+final_doc = llm_query(f"""Erstelle eine ausfuehrliche Projektdokumentation fuer '{project_name}'.
+
+Analysierte Module:
+{{modules_text}}
+
+Erstelle eine UMFANGREICHE Dokumentation (mindestens 500 Woerter) mit:
+# {project_name} - Projektdokumentation
+
 ## Uebersicht
-## Hauptkomponenten
-## Verwendung""")
+[Detaillierte Beschreibung was das Projekt macht]
+
+## Architektur
+[Wie ist das Projekt strukturiert, welche Hauptkomponenten gibt es]
+
+## Module im Detail
+[Beschreibe jedes wichtige Modul]
+
+## Installation & Verwendung
+[Wie installiert und nutzt man das Projekt]
+
+## Technologie-Stack
+[Welche Technologien/Frameworks werden verwendet]
+""")
+
 print("===DOKUMENTATION_START===")
 print(final_doc)
 print("===DOKUMENTATION_ENDE===")
 ```
 
-Nach Schritt 3: FINAL_VAR("final_doc")
+Nachdem du alle 5 Schritte ausgefuehrt hast, schreibe:
+FINAL_VAR("final_doc")
 '''
 
 RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei:
