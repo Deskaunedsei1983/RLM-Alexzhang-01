@@ -353,12 +353,13 @@ class RLM:
     def _limit_history_size(
         self,
         message_history: list[dict[str, Any]],
-        max_chars: int = 200000  # 200k Zeichen erlaubt
+        max_chars: int = 2000000  # 2M Zeichen - fuer lokale LLMs mit grossem Kontext
     ) -> list[dict[str, Any]]:
         """
-        Begrenze die History-Groesse um Context-Overflow zu vermeiden.
+        Begrenze die History-Groesse nur wenn absolut noetig.
 
-        Strategie: Kuerze nur STDOUT/Code-Outputs, behalte LLM-Antworten intakt.
+        Bei lokalen LLMs mit grossem Kontextfenster: Kaum kuerzen.
+        Strategie: Nur stdout-Outputs kuerzen, alles andere behalten.
         """
         # Berechne Gesamtgroesse
         total_chars = sum(len(str(m.get("content", ""))) for m in message_history)
@@ -366,43 +367,23 @@ class RLM:
         if total_chars <= max_chars:
             return message_history
 
-        # Behalte erste 2 Nachrichten (System/Setup) und letzte 10 Nachrichten
-        if len(message_history) <= 12:
-            return message_history
-
-        keep_start = 2
-        keep_end = 10
-        middle = message_history[keep_start:-keep_end]
-
-        # Kuerze nur Code-Output Nachrichten (user role mit stdout/stderr)
-        shortened_middle = []
-        for msg in middle:
+        # Nur wenn wirklich zu gross: Kuerze stdout-Outputs
+        result = []
+        for msg in message_history:
             content = str(msg.get("content", ""))
             role = msg.get("role", "")
 
-            # Kuerze nur lange "user" Nachrichten die Code-Output enthalten
-            if role == "user" and len(content) > 2000:
-                # Pruefe ob es Code-Output ist (enthaelt stdout, Result, etc.)
-                if "stdout" in content.lower() or "result" in content.lower() or "```" in content:
-                    # Kuerze aggressiv - behalte nur Zusammenfassung
-                    shortened = content[:500] + "\n...[Output gekuerzt]...\n" + content[-300:]
-                    shortened_middle.append({**msg, "content": shortened})
+            # Kuerze NUR sehr lange stdout-Outputs (Fortschritts-Meldungen etc.)
+            if role == "user" and len(content) > 10000:
+                # Nur kuerzen wenn es wie Terminal-Output aussieht
+                if "Fortschritt:" in content or content.count("\n") > 50:
+                    # Behalte Anfang und Ende
+                    shortened = content[:2000] + "\n...[Fortschritts-Output gekuerzt]...\n" + content[-2000:]
+                    result.append({**msg, "content": shortened})
                 else:
-                    shortened_middle.append(msg)
-            # Assistant-Antworten weniger kuerzen (enthalten wichtige Logik)
-            elif role == "assistant" and len(content) > 4000:
-                shortened = content[:2000] + "\n...[gekuerzt]...\n" + content[-1000:]
-                shortened_middle.append({**msg, "content": shortened})
+                    result.append(msg)
             else:
-                shortened_middle.append(msg)
-
-        result = message_history[:keep_start] + shortened_middle + message_history[-keep_end:]
-
-        # Pruefe nochmal die Groesse - wenn immer noch zu gross, entferne aeltere
-        new_total = sum(len(str(m.get("content", ""))) for m in result)
-        if new_total > max_chars and len(result) > 15:
-            # Behalte nur die wichtigsten Nachrichten
-            result = result[:keep_start] + result[-(keep_end + 5):]
+                result.append(msg)
 
         return result
 
