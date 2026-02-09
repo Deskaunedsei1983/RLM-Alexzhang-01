@@ -57,121 +57,86 @@ class RLMWorkflowResult:
 
 RLM_ANALYSIS_PROMPT = '''Du bist ein Code-Analyse-Experte. Du hast Zugriff auf eine Python REPL.
 
-DEINE AUFGABE: Analysiere das GESAMTE Projekt "{project_name}" - ALLE {total_files} Dateien!
+DEINE AUFGABE: Analysiere das Projekt "{project_name}" mit {total_files} Dateien.
 
 Das Projektverzeichnis ist gemountet unter: /project
-Du MUSST alle Dateien systematisch durchgehen!
 
 PROJEKT-STATISTIK:
 - Gesamtzahl Dateien: {total_files}
 - Kategorien: {categories}
 
-WICHTIGSTE DATEIEN (Startpunkt):
+WICHTIGSTE DATEIEN:
 {file_list}
 
-=== WICHTIG: SO GIBST DU DEINE FINALE ANTWORT ===
-Am Ende MUSST du FINAL_VAR("variable_name") verwenden!
-Speichere deine Dokumentation in einer Variable und rufe dann FINAL_VAR auf.
+=== DEINE ANALYSE-STRATEGIE ===
 
-Beispiel:
-```repl
-documentation = "# Meine Dokumentation\\n\\n## Inhalt..."
-```
-Dann schreibe ausserhalb des Code-Blocks:
-FINAL_VAR("documentation")
+Fuehre diese Schritte aus:
 
-=== STRATEGIE FUER VOLLSTAENDIGE ANALYSE ===
-
-SCHRITT 1: Alle Dateien sammeln
+SCHRITT 1 - Dateien erkunden:
 ```repl
 import os
-
-all_files = []
-for root, dirs, files in os.walk("/project"):
-    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv", "venv", ".next", "dist", "build", ".idea", ".vscode"]]
-    for f in files:
-        if f.endswith((".py", ".js", ".ts", ".tsx", ".jsx", ".md", ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".html", ".css", ".vue", ".svelte")):
-            all_files.append(os.path.join(root, f))
-
-print(f"Zu analysieren: {{len(all_files)}} Dateien")
+files = []
+for root, dirs, fs in os.walk("/project"):
+    dirs[:] = [d for d in dirs if d not in ["__pycache__", "node_modules", ".git", ".venv"]]
+    for f in fs:
+        if f.endswith((".py", ".js", ".ts", ".md", ".json")):
+            files.append(os.path.join(root, f))
+print(f"Gefunden: {{len(files)}} relevante Dateien")
+print("Erste 20:", files[:20])
 ```
 
-SCHRITT 2: Dateien in Batches analysieren
+SCHRITT 2 - Wichtige Dateien lesen und analysieren:
 ```repl
-batch_size = 10
-all_summaries = []
+# Lies und analysiere die wichtigsten Dateien
+wichtig = ["README", "main", "app", "index", "setup", "config"]
+summaries = []
 
-for batch_start in range(0, min(len(all_files), 500), batch_size):  # Max 500 Dateien
-    batch = all_files[batch_start:batch_start + batch_size]
-    prompts = []
-
-    for filepath in batch:
+for filepath in files[:50]:
+    name = os.path.basename(filepath).lower()
+    if any(w in name for w in wichtig) or filepath in files[:10]:
         try:
             with open(filepath, "r", errors="ignore") as f:
-                content = f.read()
-            if len(content) > 3000:
-                content = content[:1500] + "\\n...\\n" + content[-500:]
-            prompts.append(f"Kurze Beschreibung (1-2 Saetze) von {{filepath}}:\\n{{content[:2000]}}")
-        except:
-            pass
+                content = f.read()[:2000]
+            # Kurze Analyse
+            desc = llm_query(f"Beschreibe in 1-2 Saetzen was diese Datei macht:\\n{{content}}")
+            summaries.append(f"{{filepath}}: {{desc[:150]}}")
+            print(f"Analysiert: {{filepath}}")
+        except Exception as e:
+            print(f"Fehler: {{e}}")
 
-    if prompts:
-        results = llm_query_batched(prompts)
-        for fp, result in zip(batch, results):
-            all_summaries.append(f"{{fp}}: {{result[:200]}}")
-
-    print(f"Fortschritt: {{batch_start + len(batch)}}/{{min(len(all_files), 500)}}")
-
-print(f"{{len(all_summaries)}} Dateien analysiert")
+print(f"\\n{{len(summaries)}} Dateien analysiert")
 ```
 
-SCHRITT 3: Nach Verzeichnis gruppieren und Modul-Docs erstellen
+SCHRITT 3 - Dokumentation erstellen:
 ```repl
-from collections import defaultdict
-by_dir = defaultdict(list)
+# Erstelle die finale Dokumentation
+summary_text = "\\n".join(summaries[:30])
 
-for summary in all_summaries:
-    parts = summary.split(": ", 1)
-    if len(parts) == 2:
-        path, desc = parts
-        dir_name = "/".join(path.replace("/project/", "").split("/")[:-1]) or "root"
-        by_dir[dir_name].append(desc[:150])
+doc_prompt = f"""Erstelle eine Projektdokumentation basierend auf diesen Datei-Analysen:
 
-module_docs = []
-for dir_name in sorted(by_dir.keys())[:30]:  # Max 30 Module
-    files_desc = by_dir[dir_name][:10]
-    module_text = f"### {{dir_name}}\\n" + "\\n".join([f"- {{d}}" for d in files_desc])
-    module_docs.append(module_text)
+{{summary_text}}
 
-print(f"{{len(module_docs)}} Module dokumentiert")
-```
+Format:
+# {project_name} - Projektdokumentation
 
-SCHRITT 4: Finale Dokumentation erstellen und in Variable speichern
-```repl
-modules_text = "\\n\\n".join(module_docs)
+## Uebersicht
+[Was macht das Projekt?]
 
-final_prompt = f"""Erstelle eine Projektdokumentation fuer {project_name}:
+## Hauptkomponenten
+[Wichtigste Dateien/Module]
 
-Module:
-{{modules_text}}
-
-Erstelle eine strukturierte Dokumentation mit:
-- Uebersicht (was macht das Projekt)
-- Architektur (Hauptkomponenten)
-- Module (kurze Beschreibung jedes Moduls)
-- Verwendung (wie startet man das Projekt)
+## Verwendung
+[Wie nutzt man das Projekt?]
 """
 
-documentation = llm_query(final_prompt)
-print("Dokumentation erstellt!")
-print(documentation[:500])
+final_doc = llm_query(doc_prompt)
+print("===DOKUMENTATION_START===")
+print(final_doc)
+print("===DOKUMENTATION_ENDE===")
 ```
 
-SCHRITT 5: FINALE ANTWORT GEBEN
-Nachdem du die documentation Variable erstellt hast, schreibe:
-FINAL_VAR("documentation")
-
-Beginne JETZT mit Schritt 1!
+Nachdem du Schritt 3 ausgefuehrt hast, schreibe diese Zeile alleine:
+FINAL_VAR("final_doc")
 '''
 
 RLM_DEEP_ANALYSIS_PROMPT = '''Analysiere diese Datei:
@@ -357,6 +322,17 @@ Das Projekt ist gemountet unter /project - lies Dateien direkt!"""
 
         # Phase 4: Ergebnis speichern
         documentation = result.response
+        print(f"[RLMWorkflow] RLM-Response Laenge: {len(documentation)} Zeichen")
+
+        # FALLBACK: Wenn Antwort zu kurz, versuche aus Logs zu extrahieren
+        if len(documentation) < 200:
+            yield RLMWorkflowProgress(
+                stage="analyze",
+                message=f"Kurze Antwort ({len(documentation)} Zeichen), extrahiere aus Logs...",
+                progress=0.92,
+            )
+            documentation = self._extract_documentation_from_logs(result.log_file, documentation)
+            print(f"[RLMWorkflow] Nach Log-Extraktion: {len(documentation)} Zeichen")
 
         output_dir = Path(self.config.output_path)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -427,6 +403,135 @@ Das Projekt ist gemountet unter /project - lies Dateien direkt!"""
             aufgabe=prompt,
             container_mount_path="/project",
         )
+
+    def _extract_documentation_from_logs(self, log_file: Optional[str], fallback: str) -> str:
+        """
+        Extrahiert Dokumentation aus den RLM-Logs wenn FINAL_VAR fehlgeschlagen ist.
+
+        Sucht nach:
+        1. ===DOKUMENTATION_START=== ... ===DOKUMENTATION_ENDE=== Markern
+        2. LLM-Responses die wie Dokumentation aussehen
+        3. Laengster stdout-Abschnitt der wie Dokumentation aussieht
+        """
+        import json
+        import re
+
+        if not log_file or not Path(log_file).exists():
+            print(f"[RLMWorkflow] Kein Log-File gefunden: {log_file}")
+            return fallback
+
+        print(f"[RLMWorkflow] Extrahiere Dokumentation aus: {log_file}")
+
+        try:
+            with open(log_file, 'r') as f:
+                log_content = f.read()
+
+            # Suche nach Dokumentations-Markern im gesamten Log
+            marker_pattern = r'===DOKUMENTATION_START===(.*?)===DOKUMENTATION_ENDE==='
+            marker_match = re.search(marker_pattern, log_content, re.DOTALL)
+            if marker_match:
+                doc = marker_match.group(1).strip()
+                if len(doc) > 100:
+                    print(f"[RLMWorkflow] Dokumentation via Marker gefunden: {len(doc)} Zeichen")
+                    return doc
+
+            # Parse JSON lines und sammle alle relevanten Inhalte
+            all_stdout = []
+            all_responses = []
+            final_answers = []
+
+            for line in log_content.split('\n'):
+                if line.strip():
+                    try:
+                        entry = json.loads(line)
+
+                        # Sammle final_answer wenn vorhanden
+                        if 'final_answer' in entry and entry['final_answer']:
+                            fa = entry['final_answer']
+                            if isinstance(fa, str) and len(fa) > 50:
+                                final_answers.append(fa)
+
+                        # Sammle LLM-Responses
+                        if 'response' in entry:
+                            resp = entry['response']
+                            if isinstance(resp, str) and len(resp) > 100:
+                                all_responses.append(resp)
+
+                        # Suche nach stdout in code_blocks
+                        if 'code_blocks' in entry:
+                            for block in entry.get('code_blocks', []):
+                                if 'result' in block and 'stdout' in block['result']:
+                                    stdout = block['result']['stdout']
+                                    if len(stdout) > 50:
+                                        all_stdout.append(stdout)
+
+                    except json.JSONDecodeError:
+                        pass
+
+            # Wenn es final_answers gibt, nimm die laengste
+            if final_answers:
+                longest_fa = max(final_answers, key=len)
+                if len(longest_fa) > 100:
+                    print(f"[RLMWorkflow] Final Answer aus Logs: {len(longest_fa)} Zeichen")
+                    return longest_fa
+
+            print(f"[RLMWorkflow] Gefunden: {len(all_responses)} Responses, {len(all_stdout)} Stdout-Bloecke")
+
+            # Finde die beste Dokumentation
+            best_doc = fallback
+            best_source = "fallback"
+
+            # 1. Suche in stdout nach Markern oder Markdown
+            for stdout in all_stdout:
+                # Suche nach Dokumentations-Markern im stdout
+                if '===DOKUMENTATION_START===' in stdout:
+                    match = re.search(marker_pattern, stdout, re.DOTALL)
+                    if match:
+                        doc = match.group(1).strip()
+                        if len(doc) > len(best_doc):
+                            best_doc = doc
+                            best_source = "stdout_marker"
+                # Oder nimm den laengsten stdout der Markdown-artig ist
+                elif len(stdout) > len(best_doc) and ('# ' in stdout or '## ' in stdout):
+                    best_doc = stdout
+                    best_source = "stdout_markdown"
+
+            # 2. Suche in LLM-Responses nach Dokumentation
+            for resp in all_responses:
+                # Suche nach Markern
+                if '===DOKUMENTATION_START===' in resp:
+                    match = re.search(marker_pattern, resp, re.DOTALL)
+                    if match:
+                        doc = match.group(1).strip()
+                        if len(doc) > len(best_doc):
+                            best_doc = doc
+                            best_source = "response_marker"
+                # Oder Response die wie Markdown-Doku aussieht
+                elif len(resp) > len(best_doc) and resp.strip().startswith('#'):
+                    # Pruefe ob es wirklich Dokumentation ist (nicht Code)
+                    if '```' not in resp[:100]:
+                        best_doc = resp
+                        best_source = "response_markdown"
+
+            # 3. Falls immer noch zu kurz, nimm die laengste Response
+            if len(best_doc) < 200:
+                for resp in sorted(all_responses, key=len, reverse=True):
+                    if len(resp) > len(best_doc):
+                        # Filtere Code-lastige Responses
+                        code_ratio = resp.count('```') / max(1, len(resp) / 1000)
+                        if code_ratio < 5:  # Nicht zu viel Code
+                            best_doc = resp
+                            best_source = "longest_response"
+                            break
+
+            print(f"[RLMWorkflow] Beste Dokumentation: {len(best_doc)} Zeichen (Quelle: {best_source})")
+            return best_doc
+
+        except Exception as e:
+            print(f"[RLMWorkflow] Fehler beim Log-Parsing: {e}")
+            import traceback
+            traceback.print_exc()
+            return fallback
 
     def _prioritize_files(self, files: List[FileInfo]) -> List[FileInfo]:
         """Sortiert Dateien nach Wichtigkeit."""
