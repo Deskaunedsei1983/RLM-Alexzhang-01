@@ -111,21 +111,41 @@ except ImportError:
 PROXY = "http://host.docker.internal:{proxy_port}"
 STATE = "/workspace/state.dill"
 
-def llm_query(prompt, model=None):
-    try:
-        r = requests.post(f"{{PROXY}}/llm_query", json={{"prompt": prompt, "model": model, "depth": {depth}}}, timeout=1800)
-        d = r.json()
-        return d.get("response") or f"Error: {{d.get('error')}}"
-    except Exception as e:
-        return f"Error: {{e}}"
+def llm_query(prompt, model=None, retries=3):
+    for attempt in range(retries):
+        try:
+            r = requests.post(f"{{PROXY}}/llm_query", json={{"prompt": prompt, "model": model, "depth": {depth}}}, timeout=7200)
+            d = r.json()
+            result = d.get("response")
+            if result and not result.startswith("Error:"):
+                return result
+            if attempt < retries - 1:
+                import time; time.sleep(2 ** attempt)
+                continue
+            return result or f"Error: {{d.get('error')}}"
+        except Exception as e:
+            if attempt < retries - 1:
+                import time; time.sleep(2 ** attempt)
+                continue
+            return f"Error: {{e}}"
 
-def llm_query_batched(prompts, model=None):
-    try:
-        r = requests.post(f"{{PROXY}}/llm_query_batched", json={{"prompts": prompts, "model": model, "depth": {depth}}}, timeout=1800)
-        d = r.json()
-        return d.get("responses") or [f"Error: {{d.get('error')}}"] * len(prompts)
-    except Exception as e:
-        return [f"Error: {{e}}"] * len(prompts)
+def llm_query_batched(prompts, model=None, retries=3):
+    for attempt in range(retries):
+        try:
+            r = requests.post(f"{{PROXY}}/llm_query_batched", json={{"prompts": prompts, "model": model, "depth": {depth}}}, timeout=7200)
+            d = r.json()
+            results = d.get("responses")
+            if results and not any(str(r).startswith("Error:") for r in results[:3]):
+                return results
+            if attempt < retries - 1:
+                import time; time.sleep(2 ** attempt)
+                continue
+            return results or [f"Error: {{d.get('error')}}"] * len(prompts)
+        except Exception as e:
+            if attempt < retries - 1:
+                import time; time.sleep(2 ** attempt)
+                continue
+            return [f"Error: {{e}}"] * len(prompts)
 
 def load_state():
     if os.path.exists(STATE):
