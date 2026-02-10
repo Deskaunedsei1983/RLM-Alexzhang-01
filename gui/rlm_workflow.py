@@ -80,9 +80,8 @@ for root, dirs, fs in os.walk("/project"):
 print(f"Gefunden: {{len(all_files)}} Dateien")
 ```
 
-SCHRITT 2 - Dateien in GROSSEN Batches analysieren (WICHTIG: ALLE verarbeiten!):
+SCHRITT 2 - Dateien in Batches analysieren - BEHALTE VOLLSTAENDIGE BESCHREIBUNGEN:
 ```repl
-# Verarbeite ALLE Dateien in Batches von 20
 batch_size = 20
 all_summaries = []
 
@@ -94,85 +93,119 @@ for batch_start in range(0, len(all_files), batch_size):
         try:
             with open(filepath, "r", errors="ignore") as f:
                 content = f.read()
-            # Kuerze sehr lange Dateien
             if len(content) > 4000:
                 content = content[:2000] + "\\n[...]\\n" + content[-1000:]
-            prompts.append(f"Beschreibe in 1 Satz was {{filepath}} macht:\\n{{content[:3000]}}")
+            prompts.append(f"Beschreibe detailliert (2-3 Saetze) was {{filepath}} macht, welche Funktionen/Klassen es enthaelt:\\n{{content[:3000]}}")
         except:
             pass
 
     if prompts:
-        # BATCH-VERARBEITUNG: Alle 20 Dateien parallel analysieren!
         results = llm_query_batched(prompts)
         for fp, result in zip(batch, results):
-            all_summaries.append(f"{{fp}}: {{str(result)[:150]}}")
+            # WICHTIG: Behalte 500 Zeichen pro Datei fuer Details!
+            all_summaries.append(f"{{fp}}:\\n{{str(result)[:500]}}")
 
-    print(f"Fortschritt: {{min(batch_start + batch_size, len(all_files))}}/{{len(all_files)}}")
+    if batch_start % 200 == 0:
+        print(f"Fortschritt: {{batch_start}}/{{len(all_files)}}")
 
 print(f"\\nGesamt: {{len(all_summaries)}} Dateien analysiert")
 ```
 
-SCHRITT 3 - Nach Verzeichnis gruppieren:
+SCHRITT 3 - Nach Verzeichnis gruppieren und ALLE Beschreibungen behalten:
 ```repl
 from collections import defaultdict
 by_module = defaultdict(list)
 
 for summary in all_summaries:
-    parts = summary.split(": ", 1)
+    parts = summary.split(":\\n", 1)
     if len(parts) == 2:
         path, desc = parts
-        # Extrahiere Modul/Verzeichnis
         rel_path = path.replace("/project/", "")
-        module = rel_path.split("/")[0] if "/" in rel_path else "root"
-        by_module[module].append(desc[:100])
+        parts2 = rel_path.split("/")
+        # Tiefere Hierarchie: bis zu 2 Ebenen
+        if len(parts2) > 1:
+            module = "/".join(parts2[:2])
+        else:
+            module = parts2[0] if parts2 else "root"
+        # BEHALTE VOLLE BESCHREIBUNG
+        by_module[module].append(f"- {{parts2[-1]}}: {{desc}}")
 
-print(f"{{len(by_module)}} Module gefunden:")
-for mod in sorted(by_module.keys())[:20]:
-    print(f"  {{mod}}: {{len(by_module[mod])}} Dateien")
+print(f"{{len(by_module)}} Module gefunden")
 ```
 
-SCHRITT 4 - Umfangreiche Dokumentation erstellen:
+SCHRITT 4 - DETAILLIERTE Modul-Dokumentation erstellen:
 ```repl
-# Erstelle Modul-Dokumentation
 module_docs = []
 for module in sorted(by_module.keys()):
     files_in_module = by_module[module]
-    module_summary = llm_query(f"Fasse diese {{len(files_in_module)}} Dateibeschreibungen des Moduls '{{module}}' in 2-3 Saetzen zusammen:\\n" + "\\n".join(files_in_module[:30]))
-    module_docs.append(f"### {{module}}\\n{{module_summary}}")
+    # Erstelle ausfuehrliche Modul-Doku mit ALLEN Dateien (max 100 pro Modul)
+    files_text = "\\n".join(files_in_module[:100])
 
-modules_text = "\\n\\n".join(module_docs)
+    if len(files_in_module) > 5:
+        # Nur bei groesseren Modulen LLM-Zusammenfassung
+        module_summary = llm_query(f"""Erstelle eine DETAILLIERTE Modul-Dokumentation (mindestens 200 Woerter) fuer das Modul '{{module}}' mit {{len(files_in_module)}} Dateien.
+
+Dateien und ihre Funktionen:
+{{files_text}}
+
+Beschreibe:
+1. Hauptzweck des Moduls
+2. Wichtigste Komponenten/Klassen/Funktionen
+3. Wie die Dateien zusammenarbeiten
+4. Oeffentliche API/Schnittstellen
+""")
+        module_docs.append(f"### {{module}} ({{len(files_in_module)}} Dateien)\\n\\n{{module_summary}}\\n\\n**Enthaltene Dateien:**\\n{{files_text[:2000]}}")
+    else:
+        # Kleine Module: Direkt auflisten
+        module_docs.append(f"### {{module}} ({{len(files_in_module)}} Dateien)\\n\\n{{files_text}}")
+
 print(f"{{len(module_docs)}} Module dokumentiert")
 ```
 
-SCHRITT 5 - Finale Dokumentation zusammenstellen:
+SCHRITT 5 - VOLLSTAENDIGE finale Dokumentation zusammenstellen:
 ```repl
-final_doc = llm_query(f"""Erstelle eine ausfuehrliche Projektdokumentation fuer '{project_name}'.
+# Erstelle Einleitung
+intro = llm_query(f"""Schreibe eine ausfuehrliche Einleitung (300-500 Woerter) fuer die Projektdokumentation von '{project_name}'.
 
-Analysierte Module:
-{{modules_text}}
+Das Projekt hat {{len(all_files)}} Dateien in {{len(by_module)}} Modulen.
 
-Erstelle eine UMFANGREICHE Dokumentation (mindestens 500 Woerter) mit:
-# {project_name} - Projektdokumentation
+Beschreibe:
+- Was ist der Hauptzweck des Projekts?
+- Welche Technologien werden verwendet?
+- Wie ist die Architektur aufgebaut?
+- Wie installiert/verwendet man es?
+""")
+
+# Baue VOLLSTAENDIGE Dokumentation zusammen - NICHT nochmal zusammenfassen!
+modules_text = "\\n\\n".join(module_docs)
+
+final_doc = f"""# {project_name} - Projektdokumentation
 
 ## Uebersicht
-[Detaillierte Beschreibung was das Projekt macht]
 
-## Architektur
-[Wie ist das Projekt strukturiert, welche Hauptkomponenten gibt es]
+{{intro}}
+
+## Projektstatistik
+
+- **Gesamtzahl Dateien:** {{len(all_files)}}
+- **Module/Verzeichnisse:** {{len(by_module)}}
+- **Analysierte Beschreibungen:** {{len(all_summaries)}}
 
 ## Module im Detail
-[Beschreibe jedes wichtige Modul]
 
-## Installation & Verwendung
-[Wie installiert und nutzt man das Projekt]
+{{modules_text}}
 
-## Technologie-Stack
-[Welche Technologien/Frameworks werden verwendet]
-""")
+## Dateiuebersicht
+
+Die vollstaendige Liste aller analysierten Dateien:
+
+{{chr(10).join([s.split(chr(10))[0] for s in all_summaries[:500]])}}
+"""
 
 print("===DOKUMENTATION_START===")
 print(final_doc)
 print("===DOKUMENTATION_ENDE===")
+print(f"\\nDokumentation Laenge: {{len(final_doc)}} Zeichen")
 ```
 
 Nachdem du alle 5 Schritte ausgefuehrt hast, schreibe:
